@@ -1,0 +1,18 @@
+[package]
+name = "gif-win"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+gif-core = { path = "../gif-core" }
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+]

@@ -1,0 +1,261 @@
+use gif_core::session::{MonitorId, ScreenRect};
+use gif_core::writer::Rgb;
+use windows::Win32::Foundation::HMODULE;
+use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device,
+    ID3D11DeviceContext, ID3D11Texture2D,
+};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT,
+    DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1,
+    IDXGIOutputDuplication, IDXGIResource,
+};
+use windows::core::Interface;
+
+use crate::CaptureError;
+use crate::pixels::{MonitorImage, crop_to_rgb};
+
+const NO_WAIT_MS: u32 = 0;
+const FIRST_FRAME_WAIT_MS: u32 = 500;
+
+pub struct ScreenCapturer {
+    monitor: MonitorId,
+    width: u32,
+    height: u32,
+    context: ID3D11DeviceContext,
+    duplication: IDXGIOutputDuplication,
+    latest: ID3D11Texture2D,
+    has_picture: bool,
+}
+
+impl ScreenCapturer {
+    pub fn open(monitor: MonitorId) -> Result<ScreenCapturer, CaptureError> {
+        let (adapter, output) = find_monitor(monitor)?;
+        let (device, context) = create_device(&adapter)?;
+
+        let output: IDXGIOutput1 = output.cast().map_err(system)?;
+        let duplication = unsafe { output.DuplicateOutput(&device) }.map_err(system)?;
+        let mode = unsafe { duplication.GetDesc() }.ModeDesc;
+        let latest = create_cpu_readable_texture(&device, mode.Width, mode.Height)?;
+
+        Ok(ScreenCapturer {
+            monitor,
+            width: mode.Width,
+            height: mode.Height,
+            context,
+            duplication,
+            latest,
+            has_picture: false,
+        })
+    }
+
+    pub fn monitor(&self) -> MonitorId {
+        self.monitor
+    }
+
+    pub fn monitor_size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn capture(&mut self, region: ScreenRect) -> Result<Vec<Rgb>, CaptureError> {
+        if region.monitor != self.monitor {
+            return Err(CaptureError::RegionOnAnotherMonitor { opened: self.monitor, asked: region.monitor });
+        }
+
+        self.copy_new_picture_if_any(NO_WAIT_MS)?;
+        if !self.has_picture {
+            self.copy_new_picture_if_any(FIRST_FRAME_WAIT_MS)?;
+        }
+        if !self.has_picture {
+            return Err(CaptureError::NoFrameYet);
+        }
+        self.read_latest(region)
+    }
+
+    fn copy_new_picture_if_any(&mut self, wait_ms: u32) -> Result<(), CaptureError> {
+        let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
+        let mut resource: Option<IDXGIResource> = None;
+        let acquired = unsafe { self.duplication.AcquireNextFrame(wait_ms, &mut info, &mut resource) };
+
+        match acquired {
+            Ok(()) => {}
+            Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(()),
+            Err(error) if error.code() == DXGI_ERROR_ACCESS_LOST => return Err(CaptureError::AccessLost),
+            Err(error) => return Err(system(error)),
+        }
+
+        let copied = resource
+            .ok_or_else(|| CaptureError::System("the screen frame had no texture".to_string()))
+            .and_then(|resource| resource.cast::<ID3D11Texture2D>().map_err(system))
+            .map(|screen| unsafe { self.context.CopyResource(&self.latest, &screen) });
+        unsafe { self.duplication.ReleaseFrame() }.map_err(system)?;
+        copied?;
+
+        self.has_picture = true;
+        Ok(())
+    }
+
+    fn read_latest(&self, region: ScreenRect) -> Result<Vec<Rgb>, CaptureError> {
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        unsafe { self.context.Map(&self.latest, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) }.map_err(system)?;
+
+        let row_pitch = mapped.RowPitch as usize;
+        let bgra = unsafe {
+            std::slice::from_raw_parts(mapped.pData.cast::<u8>(), row_pitch * self.height as usize)
+        };
+        let image = MonitorImage { bgra, row_pitch, width: self.width, height: self.height };
+        let pixels = crop_to_rgb(&image, region);
+
+        unsafe { self.context.Unmap(&self.latest, 0) };
+        pixels
+    }
+}
+
+fn system(error: windows::core::Error) -> CaptureError {
+    CaptureError::System(error.to_string())
+}
+
+fn ends_the_list<T>(result: windows::core::Result<T>) -> Result<Option<T>, CaptureError> {
+    match result {
+        Ok(found) => Ok(Some(found)),
+        Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => Ok(None),
+        Err(error) => Err(system(error)),
+    }
+}
+
+fn find_monitor(monitor: MonitorId) -> Result<(IDXGIAdapter1, IDXGIOutput), CaptureError> {
+    let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(system)?;
+    let mut skipped = 0;
+
+    for adapter_index in 0.. {
+        let Some(adapter) = ends_the_list(unsafe { factory.EnumAdapters1(adapter_index) })? else {
+            break;
+        };
+        for output_index in 0.. {
+            let Some(output) = ends_the_list(unsafe { adapter.EnumOutputs(output_index) })? else {
+                break;
+            };
+            if skipped == monitor.0 {
+                return Ok((adapter, output));
+            }
+            skipped += 1;
+        }
+    }
+    Err(CaptureError::NoSuchMonitor(monitor))
+}
+
+fn create_device(adapter: &IDXGIAdapter1) -> Result<(ID3D11Device, ID3D11DeviceContext), CaptureError> {
+    let mut device = None;
+    let mut context = None;
+    unsafe {
+        D3D11CreateDevice(
+            adapter,
+            D3D_DRIVER_TYPE_UNKNOWN,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_FLAG(0),
+            None,
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            Some(&mut context),
+        )
+    }
+    .map_err(system)?;
+
+    match (device, context) {
+        (Some(device), Some(context)) => Ok((device, context)),
+        _ => Err(CaptureError::System("Direct3D returned no device".to_string())),
+    }
+}
+
+fn create_cpu_readable_texture(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> Result<ID3D11Texture2D, CaptureError> {
+    let description = D3D11_TEXTURE2D_DESC {
+        Width: width,
+        Height: height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: D3D11_USAGE_STAGING,
+        BindFlags: 0,
+        CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+        MiscFlags: 0,
+    };
+    let mut texture = None;
+    unsafe { device.CreateTexture2D(&description, None, Some(&mut texture)) }.map_err(system)?;
+    texture.ok_or_else(|| CaptureError::System("Direct3D returned no texture".to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PRIMARY: MonitorId = MonitorId(0);
+
+    fn region(monitor: MonitorId, x: i32, y: i32, width: u32, height: u32) -> ScreenRect {
+        ScreenRect { monitor, x, y, width, height }
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn the_primary_monitor_reports_a_real_size() {
+        let capturer = ScreenCapturer::open(PRIMARY).unwrap();
+        let (width, height) = capturer.monitor_size();
+        assert!(width >= 640 && height >= 480, "{width}x{height}");
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn a_region_comes_back_with_one_color_per_pixel() {
+        let mut capturer = ScreenCapturer::open(PRIMARY).unwrap();
+        let pixels = capturer.capture(region(PRIMARY, 0, 0, 64, 48)).unwrap();
+        assert_eq!(pixels.len(), 64 * 48);
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn capturing_again_while_the_screen_is_still_gives_the_same_size_picture() {
+        let mut capturer = ScreenCapturer::open(PRIMARY).unwrap();
+        let whole = {
+            let (width, height) = capturer.monitor_size();
+            region(PRIMARY, 0, 0, width, height)
+        };
+        let first = capturer.capture(whole).unwrap();
+        for _ in 0..5 {
+            assert_eq!(capturer.capture(whole).unwrap().len(), first.len());
+        }
+    }
+
+    #[test]
+    fn a_monitor_that_is_not_there_is_reported() {
+        assert_eq!(ScreenCapturer::open(MonitorId(99)).err(), Some(CaptureError::NoSuchMonitor(MonitorId(99))));
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn a_region_for_another_monitor_is_rejected() {
+        let mut capturer = ScreenCapturer::open(PRIMARY).unwrap();
+        assert_eq!(
+            capturer.capture(region(MonitorId(1), 0, 0, 10, 10)),
+            Err(CaptureError::RegionOnAnotherMonitor { opened: PRIMARY, asked: MonitorId(1) })
+        );
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn a_region_larger_than_the_monitor_is_rejected() {
+        let mut capturer = ScreenCapturer::open(PRIMARY).unwrap();
+        let (monitor_width, monitor_height) = capturer.monitor_size();
+        assert_eq!(
+            capturer.capture(region(PRIMARY, 0, 0, monitor_width + 1, 10)),
+            Err(CaptureError::RegionOutsideMonitor { monitor_width, monitor_height })
+        );
+    }
+}
