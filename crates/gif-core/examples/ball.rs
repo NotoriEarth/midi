@@ -1,7 +1,6 @@
 use gif_core::GifFps;
-use gif_core::dither::ordered_dither;
-use gif_core::palette::Palette;
-use gif_core::writer::{Rgb, write_gif};
+use gif_core::encode::{ManualSettings, encode_gif};
+use gif_core::writer::Rgb;
 
 const WIDTH: usize = 240;
 const HEIGHT: usize = 135;
@@ -14,15 +13,9 @@ fn main() {
     let frames: Vec<Vec<Rgb>> = (0..FRAMES).map(frame).collect();
     let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
 
-    let palette = Palette::from_frames(&frames, Palette::MAX_COLORS).expect("frames have pixels");
-    let indexed: Vec<Vec<u8>> = frames
-        .iter()
-        .map(|frame| ordered_dither(&palette, frame, WIDTH, 1.0).expect("frames are WIDTH wide"))
-        .collect();
-    let indexed: Vec<&[u8]> = indexed.iter().map(Vec::as_slice).collect();
-
-    let bytes = write_gif(WIDTH as u16, HEIGHT as u16, palette.colors(), &indexed, GifFps::Fps30)
-        .expect("indices come from the palette");
+    let settings = ManualSettings { colors: ManualSettings::MAX_COLORS, dither: 1.0 };
+    let bytes = encode_gif(WIDTH as u16, HEIGHT as u16, &frames, GifFps::Fps30, settings)
+        .expect("frames are WIDTH x HEIGHT and the settings are in range");
     std::fs::write(&path, &bytes).expect("the output path is writable");
     println!("{path}: {} bytes, {} frames", bytes.len(), frames.len());
 }
