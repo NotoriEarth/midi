@@ -1,4 +1,5 @@
 pub mod delay;
+pub mod dither;
 pub mod fps;
 pub mod hotkey;
 pub mod palette;

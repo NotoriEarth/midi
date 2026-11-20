@@ -56,7 +56,7 @@ impl Palette {
             .collect()
     }
 
-    fn nearest(&self, pixel: Rgb) -> u8 {
+    pub fn nearest(&self, pixel: Rgb) -> u8 {
         let index = (0..self.0.len())
             .min_by_key(|&index| squared_distance(self.0[index], pixel))
             .expect("a palette always has at least one color");
