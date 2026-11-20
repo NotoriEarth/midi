@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
 use windows::Win32::Foundation::HMODULE;
@@ -19,7 +21,7 @@ use crate::CaptureError;
 use crate::pixels::{MonitorImage, crop_to_rgb};
 
 const NO_WAIT_MS: u32 = 0;
-const FIRST_FRAME_WAIT_MS: u32 = 500;
+const FIRST_PICTURE_WAIT: Duration = Duration::from_millis(500);
 
 pub struct ScreenCapturer {
     monitor: MonitorId,
@@ -66,11 +68,13 @@ impl ScreenCapturer {
         }
 
         self.copy_new_picture_if_any(NO_WAIT_MS)?;
-        if !self.has_picture {
-            self.copy_new_picture_if_any(FIRST_FRAME_WAIT_MS)?;
-        }
-        if !self.has_picture {
-            return Err(CaptureError::NoFrameYet);
+        let give_up_at = Instant::now() + FIRST_PICTURE_WAIT;
+        while !self.has_picture {
+            let left = give_up_at.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(CaptureError::NoFrameYet);
+            }
+            self.copy_new_picture_if_any(left.as_millis() as u32)?;
         }
         self.read_latest(region)
     }
@@ -87,14 +91,19 @@ impl ScreenCapturer {
             Err(error) => return Err(system(error)),
         }
 
-        let copied = resource
-            .ok_or_else(|| CaptureError::System("the screen frame had no texture".to_string()))
-            .and_then(|resource| resource.cast::<ID3D11Texture2D>().map_err(system))
-            .map(|screen| unsafe { self.context.CopyResource(&self.latest, &screen) });
+        let desktop_was_redrawn = info.LastPresentTime != 0;
+        let copied = if desktop_was_redrawn {
+            resource
+                .ok_or_else(|| CaptureError::System("the screen frame had no texture".to_string()))
+                .and_then(|resource| resource.cast::<ID3D11Texture2D>().map_err(system))
+                .map(|screen| unsafe { self.context.CopyResource(&self.latest, &screen) })
+        } else {
+            Ok(())
+        };
         unsafe { self.duplication.ReleaseFrame() }.map_err(system)?;
         copied?;
 
-        self.has_picture = true;
+        self.has_picture |= desktop_was_redrawn;
         Ok(())
     }
 
@@ -196,8 +205,16 @@ fn create_cpu_readable_texture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, PoisonError};
 
     const PRIMARY: MonitorId = MonitorId(0);
+
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    fn open_primary() -> (MutexGuard<'static, ()>, ScreenCapturer) {
+        let alone = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+        (alone, ScreenCapturer::open(PRIMARY).unwrap())
+    }
 
     fn region(monitor: MonitorId, x: i32, y: i32, width: u32, height: u32) -> ScreenRect {
         ScreenRect { monitor, x, y, width, height }
@@ -206,7 +223,7 @@ mod tests {
     #[test]
     #[ignore = "needs an unlocked desktop; run with --ignored"]
     fn the_primary_monitor_reports_a_real_size() {
-        let capturer = ScreenCapturer::open(PRIMARY).unwrap();
+        let (_alone, capturer) = open_primary();
         let (width, height) = capturer.monitor_size();
         assert!(width >= 640 && height >= 480, "{width}x{height}");
     }
@@ -214,7 +231,7 @@ mod tests {
     #[test]
     #[ignore = "needs an unlocked desktop; run with --ignored"]
     fn a_region_comes_back_with_one_color_per_pixel() {
-        let mut capturer = ScreenCapturer::open(PRIMARY).unwrap();
+        let (_alone, mut capturer) = open_primary();
         let pixels = capturer.capture(region(PRIMARY, 0, 0, 64, 48)).unwrap();
         assert_eq!(pixels.len(), 64 * 48);
     }
@@ -222,7 +239,7 @@ mod tests {
     #[test]
     #[ignore = "needs an unlocked desktop; run with --ignored"]
     fn capturing_again_while_the_screen_is_still_gives_the_same_size_picture() {
-        let mut capturer = ScreenCapturer::open(PRIMARY).unwrap();
+        let (_alone, mut capturer) = open_primary();
         let whole = {
             let (width, height) = capturer.monitor_size();
             region(PRIMARY, 0, 0, width, height)
@@ -234,6 +251,16 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn the_first_capture_already_shows_the_desktop() {
+        let (_alone, mut capturer) = open_primary();
+        let (width, height) = capturer.monitor_size();
+        let pixels = capturer.capture(region(PRIMARY, 0, 0, width, height)).unwrap();
+        let first = pixels[0];
+        assert!(pixels.iter().any(|&pixel| pixel != first), "every pixel is {first:?}");
+    }
+
+    #[test]
     fn a_monitor_that_is_not_there_is_reported() {
         assert_eq!(ScreenCapturer::open(MonitorId(99)).err(), Some(CaptureError::NoSuchMonitor(MonitorId(99))));
     }
@@ -241,7 +268,7 @@ mod tests {
     #[test]
     #[ignore = "needs an unlocked desktop; run with --ignored"]
     fn a_region_for_another_monitor_is_rejected() {
-        let mut capturer = ScreenCapturer::open(PRIMARY).unwrap();
+        let (_alone, mut capturer) = open_primary();
         assert_eq!(
             capturer.capture(region(MonitorId(1), 0, 0, 10, 10)),
             Err(CaptureError::RegionOnAnotherMonitor { opened: PRIMARY, asked: MonitorId(1) })
@@ -251,7 +278,7 @@ mod tests {
     #[test]
     #[ignore = "needs an unlocked desktop; run with --ignored"]
     fn a_region_larger_than_the_monitor_is_rejected() {
-        let mut capturer = ScreenCapturer::open(PRIMARY).unwrap();
+        let (_alone, mut capturer) = open_primary();
         let (monitor_width, monitor_height) = capturer.monitor_size();
         assert_eq!(
             capturer.capture(region(PRIMARY, 0, 0, monitor_width + 1, 10)),
