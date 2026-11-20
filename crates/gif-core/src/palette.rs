@@ -14,7 +14,7 @@ pub enum PaletteError {
 type CountedColor = (Rgb, u64);
 
 impl Palette {
-    pub const MAX_COLORS: usize = 256;
+    pub const MAX_COLORS: usize = 255;
 
     pub fn from_frames(frames: &[&[Rgb]], max_colors: usize) -> Result<Palette, PaletteError> {
         if !(1..=Self::MAX_COLORS).contains(&max_colors) {
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn an_image_within_the_limit_keeps_its_exact_colors() {
         let pixels = [[255, 0, 0], [0, 255, 0], [255, 0, 0], [0, 0, 255]];
-        let palette = Palette::from_frames(&[&pixels], 256).unwrap();
+        let palette = Palette::from_frames(&[&pixels], Palette::MAX_COLORS).unwrap();
 
         assert_eq!(palette.colors().len(), 3);
         let restored: Vec<Rgb> =
@@ -183,7 +183,7 @@ mod tests {
     fn colors_from_every_frame_are_counted() {
         let first = [[255, 0, 0]];
         let second = [[0, 0, 255]];
-        let palette = Palette::from_frames(&[&first, &second], 256).unwrap();
+        let palette = Palette::from_frames(&[&first, &second], Palette::MAX_COLORS).unwrap();
         let mut colors = palette.colors().to_vec();
         colors.sort();
         assert_eq!(colors, [[0, 0, 255], [255, 0, 0]]);
@@ -212,18 +212,18 @@ mod tests {
     #[test]
     fn input_that_cannot_make_a_palette_is_rejected() {
         let pixel = [gray(0)];
-        assert_eq!(Palette::from_frames(&[], 256), Err(PaletteError::NoPixels));
-        assert_eq!(Palette::from_frames(&[&[]], 256), Err(PaletteError::NoPixels));
+        assert_eq!(Palette::from_frames(&[], 255), Err(PaletteError::NoPixels));
+        assert_eq!(Palette::from_frames(&[&[]], 255), Err(PaletteError::NoPixels));
         assert_eq!(Palette::from_frames(&[&pixel], 0), Err(PaletteError::ColorLimit(0)));
-        assert_eq!(Palette::from_frames(&[&pixel], 257), Err(PaletteError::ColorLimit(257)));
+        assert_eq!(Palette::from_frames(&[&pixel], 256), Err(PaletteError::ColorLimit(256)));
     }
 
     #[test]
     fn rgb_frames_become_a_gif_that_decodes_to_the_same_colors() {
-        let frame: Vec<Rgb> = (0..16 * 16).map(|n| [(n % 16 * 17) as u8, (n / 16 * 17) as u8, 90]).collect();
-        let palette = Palette::from_frames(&[&frame], 256).unwrap();
+        let frame: Vec<Rgb> = (0..12 * 12).map(|n| [(n % 12 * 20) as u8, (n / 12 * 20) as u8, 90]).collect();
+        let palette = Palette::from_frames(&[&frame], Palette::MAX_COLORS).unwrap();
         let indices = palette.to_indices(&frame);
-        let bytes = write_gif(16, 16, palette.colors(), &[&indices], GifFps::Fps10).unwrap();
+        let bytes = write_gif(12, 12, palette.colors(), &[&indices], GifFps::Fps10).unwrap();
 
         let mut options = gif::DecodeOptions::new();
         options.set_color_output(gif::ColorOutput::RGBA);

@@ -1,4 +1,5 @@
 pub mod delay;
+mod diff;
 pub mod dither;
 pub mod fps;
 pub mod hotkey;

@@ -135,7 +135,8 @@ function encodeGif(frames: SealedFrames, s: EncodeSettings, onProgress: (p: numb
 
 - `crates/gif-core/src/session.rs`의 `step(state, event, control)`이 위 전이 규칙을 순수 함수로 구현합니다. 해당하지 않는 이벤트는 상태를 바꾸지 않습니다.
 - 스케치와 다른 점: 선택 시작을 `BeginSelection` 이벤트로 넣었습니다(스케치에서는 `beginSelection()` 호출).
-- `crates/gif-core/src/writer.rs`의 `write_gif`가 팔레트 인덱스 프레임을 LZW로 압축해 GIF89a 파일로 씁니다. 프레임 차분, 팔레트 양자화, 손실 압축은 이후 단위입니다.
+- `crates/gif-core/src/writer.rs`의 `write_gif`가 팔레트 인덱스 프레임을 LZW로 압축해 GIF89a 파일로 씁니다. 두 번째 프레임부터는 바로 앞 프레임과 달라진 픽셀만 담습니다(`crates/gif-core/src/diff.rs`): 달라진 픽셀을 모두 감싸는 가장 작은 사각형만 쓰고, 그 안에서 안 변한 픽셀은 투명 번호로 채웁니다. 손실 압축은 이후 단위입니다.
+- 투명 번호 한 자리를 비워 두어야 해서 팔레트는 최대 255색입니다(`Palette::MAX_COLORS`, `write_gif` 모두).
 - `crates/gif-core/src/palette.rs`의 `Palette::from_frames`가 모든 프레임의 색을 중앙값 분할(median cut)로 최대 256색까지 줄여 전역 팔레트를 만들고, `to_indices`가 픽셀마다 가장 가까운 팔레트 색 번호를 고릅니다.
 - `crates/gif-core/src/dither.rs`의 `ordered_dither`가 위치 고정 패턴(Bayer 8×8) 디더링을 합니다. 강도는 0..1이고 0이면 디더링 없음과 같습니다. 픽셀 하나가 바뀌어도 다른 픽셀의 결과는 바뀌지 않습니다. 오차 확산 방식은 아직 없습니다.
 - 아직 없는 것: `done`, `failed` 상태, `recording`의 시작 시각과 프레임 수, `encoding`의 진행률, 효과 목록. 캡처와 인코더 단위에서 추가합니다.
@@ -169,6 +170,7 @@ function encodeGif(frames: SealedFrames, s: EncodeSettings, onProgress: (p: numb
 | 2026-11-20 | 드래그 외에, 상하좌우로 크기를 조절하는 녹화 틀로 영역을 정하는 방식을 설정에서 고를 수 있음 | 사용자 |
 | 2026-11-20 | 녹화 중에는 영역 고정(틀 이동과 크기 변경 불가) | Claude 제안, 사용자 확정 |
 | 2026-11-20 | 녹화 틀 방식의 시작은 항상 [시작] 버튼, 종료는 `recordControl`을 따름 | Claude 제안, 사용자 확정 |
+| 2026-11-20 | 팔레트는 최대 255색 + 투명 1칸(프레임 차분용) | Claude 결정, 사용자 확인 전 |
 | 2026-11-20 | 코드는 `/pstack:teach`로 설명할 수 있는 작은 단위로 쌓아 감(단위마다 하나의 개념, 테스트, 왜 그렇게 했는지 기록) | 사용자 |
 
 처음에 권장했던 "시작 단축키 토글"은 채택하지 않았습니다. 녹화 중 조작이 없는 용도라서 Enter가 시연 조작과 충돌할 일이 없고, 커서를 찍지 않으니 버튼 방식의 단점(버튼으로 가는 커서가 찍힘)도 사라졌기 때문입니다.

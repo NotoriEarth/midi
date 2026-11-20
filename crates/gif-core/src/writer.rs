@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::diff::{FramePatch, changed_patch};
 use crate::{GifFps, frame_delays};
 
 pub type Rgb = [u8; 3];
@@ -23,19 +24,25 @@ pub fn write_gif(
     let pixel_count = usize::from(width) * usize::from(height);
     check_input(pixel_count, palette, frames)?;
 
-    let table_bits = color_table_bits(palette.len());
+    let transparent = palette.len() as u8;
+    let table_bits = color_table_bits(palette.len() + 1);
     let min_code_size = table_bits.max(2);
     let delays = frame_delays(fps, frames.len());
+    let row_width = usize::from(width);
+
+    let first = FramePatch::whole_frame(frames[0], row_width);
+    let later = frames.windows(2).map(|pair| changed_patch(pair[0], pair[1], row_width, transparent));
+    let patches = std::iter::once(first).chain(later);
 
     let mut out = Vec::new();
     write_header(&mut out, width, height, table_bits);
     write_color_table(&mut out, palette, table_bits);
     write_loop_forever(&mut out);
-    for (pixels, delay) in frames.iter().zip(delays) {
-        write_frame_delay(&mut out, delay);
-        write_image_position(&mut out, width, height);
+    for (patch, delay) in patches.zip(delays) {
+        write_frame_control(&mut out, delay, transparent);
+        write_image_position(&mut out, &patch);
         out.push(min_code_size);
-        write_sub_blocks(&mut out, &lzw(pixels, min_code_size));
+        write_sub_blocks(&mut out, &lzw(&patch.pixels, min_code_size));
     }
     out.push(TRAILER);
     Ok(out)
@@ -47,6 +54,7 @@ const APPLICATION: u8 = 0xFF;
 const IMAGE: u8 = 0x2C;
 const TRAILER: u8 = 0x3B;
 const BLOCK_END: u8 = 0;
+const MAX_PALETTE_COLORS: usize = 255;
 
 fn check_input(pixel_count: usize, palette: &[Rgb], frames: &[&[u8]]) -> Result<(), GifWriteError> {
     if pixel_count == 0 {
@@ -55,7 +63,7 @@ fn check_input(pixel_count: usize, palette: &[Rgb], frames: &[&[u8]]) -> Result<
     if frames.is_empty() {
         return Err(GifWriteError::NoFrames);
     }
-    if palette.is_empty() || palette.len() > 256 {
+    if palette.is_empty() || palette.len() > MAX_PALETTE_COLORS {
         return Err(GifWriteError::PaletteSize(palette.len()));
     }
     for (frame, pixels) in frames.iter().enumerate() {
@@ -111,19 +119,24 @@ fn write_loop_forever(out: &mut Vec<u8>) {
     out.push(BLOCK_END);
 }
 
-fn write_frame_delay(out: &mut Vec<u8>, delay: u16) {
-    let no_disposal_no_transparency = 0;
-    let transparent_color = 0;
-    out.extend_from_slice(&[EXTENSION, GRAPHIC_CONTROL, 4, no_disposal_no_transparency]);
+fn write_frame_control(out: &mut Vec<u8>, delay: u16, transparent: u8) {
+    let keep_this_frame_under_the_next = 1 << 2;
+    let has_transparent_color = 1;
+    out.extend_from_slice(&[
+        EXTENSION,
+        GRAPHIC_CONTROL,
+        4,
+        keep_this_frame_under_the_next | has_transparent_color,
+    ]);
     out.extend_from_slice(&delay.to_le_bytes());
-    out.extend_from_slice(&[transparent_color, BLOCK_END]);
+    out.extend_from_slice(&[transparent, BLOCK_END]);
 }
 
-fn write_image_position(out: &mut Vec<u8>, width: u16, height: u16) {
+fn write_image_position(out: &mut Vec<u8>, patch: &FramePatch) {
     let no_local_table = 0;
     out.push(IMAGE);
-    for value in [0, 0, width, height] {
-        out.extend_from_slice(&value.to_le_bytes());
+    for value in [patch.left, patch.top, patch.width, patch.height] {
+        out.extend_from_slice(&(value as u16).to_le_bytes());
     }
     out.push(no_local_table);
 }
@@ -224,9 +237,19 @@ mod tests {
         let mut options = gif::DecodeOptions::new();
         options.set_color_output(gif::ColorOutput::Indexed);
         let mut decoder = options.read_info(bytes).expect("a readable GIF header");
+        let (width, height) = (usize::from(decoder.width()), usize::from(decoder.height()));
+        let mut canvas = vec![0u8; width * height];
         let mut frames = Vec::new();
         while let Some(frame) = decoder.read_next_frame().expect("a readable frame") {
-            frames.push((frame.delay, frame.buffer.to_vec()));
+            let (left, top) = (usize::from(frame.left), usize::from(frame.top));
+            let patch_width = usize::from(frame.width);
+            for (position, &index) in frame.buffer.iter().enumerate() {
+                if Some(index) != frame.transparent {
+                    let (x, y) = (left + position % patch_width, top + position / patch_width);
+                    canvas[y * width + x] = index;
+                }
+            }
+            frames.push((frame.delay, canvas.clone()));
         }
         Decoded {
             width: decoder.width(),
@@ -257,9 +280,9 @@ mod tests {
     }
 
     #[test]
-    fn a_full_256_color_image_survives_the_round_trip() {
-        let palette: Vec<Rgb> = (0..=255).map(|value| [value, value, value]).collect();
-        let pixels: Vec<u8> = (0..64 * 48).map(|index| (index % 256) as u8).collect();
+    fn a_full_255_color_image_survives_the_round_trip() {
+        let palette: Vec<Rgb> = (0..255).map(|value| [value, value, value]).collect();
+        let pixels: Vec<u8> = (0..64 * 48).map(|index| (index % 255) as u8).collect();
         let bytes = write_gif(64, 48, &palette, &[&pixels], GifFps::Fps15).unwrap();
         assert_eq!(decode(&bytes).frames[0].1, pixels);
     }
@@ -274,14 +297,14 @@ mod tests {
 
     #[test]
     fn noise_that_fills_the_code_table_many_times_survives_the_round_trip() {
-        let palette: Vec<Rgb> = (0..=255).map(|value| [value, 0, 255 - value]).collect();
+        let palette: Vec<Rgb> = (0..255).map(|value| [value, 0, 255 - value]).collect();
         let mut seed = 0x2545_F491u32;
         let pixels: Vec<u8> = (0..300 * 200)
             .map(|_| {
                 seed ^= seed << 13;
                 seed ^= seed >> 17;
                 seed ^= seed << 5;
-                (seed >> 24) as u8
+                (seed % 255) as u8
             })
             .collect();
         let bytes = write_gif(300, 200, &palette, &[&pixels], GifFps::Fps10).unwrap();
@@ -290,12 +313,68 @@ mod tests {
 
     #[test]
     fn a_repeating_pattern_survives_the_round_trip_at_every_palette_size() {
-        for color_count in [1usize, 2, 3, 4, 5, 16, 17, 128, 256] {
+        for color_count in [1usize, 2, 3, 4, 5, 15, 16, 127, 128, 255] {
             let palette = vec![BLACK; color_count];
             let pixels: Vec<u8> = (0..97 * 61).map(|index| ((index / 7) % color_count) as u8).collect();
             let bytes = write_gif(97, 61, &palette, &[&pixels], GifFps::Fps10).unwrap();
             assert_eq!(decode(&bytes).frames[0].1, pixels, "{color_count} colors");
         }
+    }
+
+    fn dot_crossing_a_busy_background() -> Vec<Vec<u8>> {
+        let mut seed = 0x9E37_79B9u32;
+        let background: Vec<u8> = (0..60 * 40)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                (seed % 200) as u8
+            })
+            .collect();
+        (0..10)
+            .map(|step| {
+                let mut frame = background.clone();
+                frame[20 * 60 + step * 5] = 200;
+                frame
+            })
+            .collect()
+    }
+
+    fn yellows() -> Vec<Rgb> {
+        (0..=200).map(|value| [value, value, 0]).collect()
+    }
+
+    #[test]
+    fn a_small_change_on_a_busy_background_shows_the_right_picture() {
+        let frames = dot_crossing_a_busy_background();
+        let slices: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+
+        let bytes = write_gif(60, 40, &yellows(), &slices, GifFps::Fps10).unwrap();
+        let shown: Vec<Vec<u8>> = decode(&bytes).frames.into_iter().map(|(_, pixels)| pixels).collect();
+        assert_eq!(shown, frames);
+    }
+
+    #[test]
+    fn frames_that_barely_change_cost_almost_nothing() {
+        let frames = dot_crossing_a_busy_background();
+        let slices: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+
+        let one_frame = write_gif(60, 40, &yellows(), &slices[..1], GifFps::Fps10).unwrap();
+        let ten_frames = write_gif(60, 40, &yellows(), &slices, GifFps::Fps10).unwrap();
+        assert!(
+            ten_frames.len() < one_frame.len() + 400,
+            "one frame {} bytes, ten frames {} bytes",
+            one_frame.len(),
+            ten_frames.len()
+        );
+    }
+
+    #[test]
+    fn identical_frames_still_show_for_their_full_time() {
+        let frame = [0u8, 1, 1, 0];
+        let bytes = write_gif(2, 2, &[BLACK, RED], &[&frame[..]; 4], GifFps::Fps15).unwrap();
+        let shown = vec![(6, frame.to_vec()), (7, frame.to_vec()), (7, frame.to_vec()), (6, frame.to_vec())];
+        assert_eq!(decode(&bytes).frames, shown);
     }
 
     #[test]
@@ -314,8 +393,8 @@ mod tests {
         assert_eq!(write_gif(2, 1, &[BLACK], &[], fps), Err(GifWriteError::NoFrames));
         assert_eq!(write_gif(2, 1, &[], &[ok_frame], fps), Err(GifWriteError::PaletteSize(0)));
         assert_eq!(
-            write_gif(2, 1, &[BLACK; 257], &[ok_frame], fps),
-            Err(GifWriteError::PaletteSize(257))
+            write_gif(2, 1, &[BLACK; 256], &[ok_frame], fps),
+            Err(GifWriteError::PaletteSize(256))
         );
         assert_eq!(
             write_gif(2, 1, &[BLACK], &[ok_frame, &[0]], fps),
