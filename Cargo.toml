@@ -1,7 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/gif-core"]
+members = ["crates/gif-core", "app"]
 
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+
+[profile.dev.package.gif-core]
+opt-level = 3

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>midi</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>샘플 GIF 만들기</h1>
+      <p class="hint">Rust 인코더(gif-core)가 만든 GIF를 이 창에서 바로 봅니다.</p>
+
+      <form id="settings">
+        <label>
+          프레임 수(fps)
+          <select id="fps">
+            <option value="10">10</option>
+            <option value="15">15</option>
+            <option value="30" selected>30</option>
+          </select>
+        </label>
+        <label>
+          색 수 <output id="colors-value">255</output>
+          <input id="colors" type="range" min="2" max="255" value="255" />
+        </label>
+        <label>
+          디더링 강도 <output id="dither-value">1</output>
+          <input id="dither" type="range" min="0" max="1" step="0.05" value="1" />
+        </label>
+        <button id="make" type="submit">만들기</button>
+      </form>
+
+      <p id="status" role="status">설정을 고르고 만들기를 누르세요.</p>
+      <img id="preview" alt="만들어진 GIF 미리보기" hidden />
+    </main>
+    <script src="main.js"></script>
+  </body>
+</html>

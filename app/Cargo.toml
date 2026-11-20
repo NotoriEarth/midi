@@ -1,0 +1,11 @@
+[package]
+name = "midi-app"
+edition.workspace = true
+version.workspace = true
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+gif-core = { path = "../crates/gif-core" }
+tauri = "2"

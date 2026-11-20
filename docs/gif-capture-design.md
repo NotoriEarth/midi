@@ -140,6 +140,7 @@ function encodeGif(frames: SealedFrames, s: EncodeSettings, onProgress: (p: numb
 - `crates/gif-core/src/palette.rs`의 `Palette::from_frames`가 모든 프레임의 색을 중앙값 분할(median cut)로 최대 256색까지 줄여 전역 팔레트를 만들고, `to_indices`가 픽셀마다 가장 가까운 팔레트 색 번호를 고릅니다.
 - `crates/gif-core/src/dither.rs`의 `ordered_dither`가 위치 고정 패턴(Bayer 8×8) 디더링을 합니다. 강도는 0..1이고 0이면 디더링 없음과 같습니다. 픽셀 하나가 바뀌어도 다른 픽셀의 결과는 바뀌지 않습니다. 오차 확산 방식은 아직 없습니다.
 - `crates/gif-core/src/encode.rs`의 `encode_gif`가 RGB 프레임을 받아 팔레트 → 디더링 → 차분 → 압축을 한 번에 수행하는 순수 함수입니다. 설정은 `ManualSettings { colors: 2..=255, dither: 0..=1 }`입니다. `lossy`와 `maxSize` 모드는 아직 없고, 생기면 스케치의 `EncodeSettings` 합 타입으로 묶습니다.
+- `app`(Tauri 2)과 `ui`(빌드 도구 없는 정적 HTML/JS)가 생겼습니다. 지금은 샘플 영상을 `encode_gif`로 만들어 창에 보여 주는 명령 `make_sample_gif` 하나뿐입니다. 화면이 커지면 TypeScript와 번들러를 도입합니다.
 - 아직 없는 것: `done`, `failed` 상태, `recording`의 시작 시각과 프레임 수, `encoding`의 진행률, 효과 목록. 캡처와 인코더 단위에서 추가합니다.
 
 ### 상태별 소유자 (하나의 상태에 소유자는 하나)
