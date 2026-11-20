@@ -9,21 +9,25 @@ const RADIUS: i64 = 12;
 const BALL: Rgb = [255, 240, 80];
 
 pub fn encode(fps: u32, colors: usize, dither: f32) -> Result<Vec<u8>, String> {
-    let fps = GifFps::try_from(fps)
-        .map_err(|unsupported| format!("지원하지 않는 fps입니다: {} (10, 15, 30 중에서 고르세요)", unsupported.0))?;
+    let fps = parse_fps(fps)?;
 
     let frame_count = fps.per_second() as usize * SECONDS;
     let frames: Vec<Vec<Rgb>> = (0..frame_count).map(|number| frame(number, frame_count)).collect();
     let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
 
-    encode_gif(WIDTH as u16, HEIGHT as u16, &frames, fps, ManualSettings { colors, dither }).map_err(explain)
+    encode_gif(WIDTH as u16, HEIGHT as u16, &frames, fps, ManualSettings { colors, dither }).map_err(explain_encode)
 }
 
-fn explain(error: EncodeError) -> String {
+pub fn parse_fps(fps: u32) -> Result<GifFps, String> {
+    GifFps::try_from(fps)
+        .map_err(|unsupported| format!("지원하지 않는 fps입니다: {} (10, 15, 30 중에서 고르세요)", unsupported.0))
+}
+
+pub fn explain_encode(error: EncodeError) -> String {
     match error {
         EncodeError::Colors(colors) => format!("색 수는 2~255 사이여야 합니다: {colors}"),
         EncodeError::Dither(dither) => format!("디더링 강도는 0~1 사이여야 합니다: {dither}"),
-        other => format!("샘플 프레임을 만들지 못했습니다: {other:?}"),
+        other => format!("GIF를 만들지 못했습니다: {other:?}"),
     }
 }
 

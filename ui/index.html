@@ -8,8 +8,8 @@
   </head>
   <body>
     <main>
-      <h1>샘플 GIF 만들기</h1>
-      <p class="hint">Rust 인코더(gif-core)가 만든 GIF를 이 창에서 바로 봅니다.</p>
+      <h1>GIF 만들기</h1>
+      <p class="hint">샘플 영상이나 주 모니터 왼쪽 위 480×270 영역을 GIF로 만들어 이 창에서 바로 봅니다.</p>
 
       <form id="settings">
         <label>
@@ -28,10 +28,22 @@
           디더링 강도 <output id="dither-value">1</output>
           <input id="dither" type="range" min="0" max="1" step="0.05" value="1" />
         </label>
-        <button id="make" type="submit">만들기</button>
+        <label>
+          녹화 길이
+          <select id="seconds">
+            <option value="1">1초</option>
+            <option value="3" selected>3초</option>
+            <option value="5">5초</option>
+            <option value="10">10초</option>
+          </select>
+        </label>
+        <div class="actions">
+          <button id="make" type="submit">샘플 만들기</button>
+          <button id="record" type="button">화면 녹화</button>
+        </div>
       </form>
 
-      <p id="status" role="status">설정을 고르고 만들기를 누르세요.</p>
+      <p id="status" role="status">설정을 고르고 버튼을 누르세요.</p>
       <img id="preview" alt="만들어진 GIF 미리보기" hidden />
     </main>
     <script src="main.js"></script>

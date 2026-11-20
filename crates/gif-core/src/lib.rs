@@ -5,6 +5,7 @@ pub mod encode;
 pub mod fps;
 pub mod hotkey;
 pub mod palette;
+pub mod schedule;
 pub mod session;
 pub mod writer;
 

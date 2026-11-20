@@ -92,3 +92,12 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 10px;
 }
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.actions button {
+  flex: 1;
+}

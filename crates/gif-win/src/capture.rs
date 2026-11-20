@@ -205,16 +205,7 @@ fn create_cpu_readable_texture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard, PoisonError};
-
-    const PRIMARY: MonitorId = MonitorId(0);
-
-    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
-
-    fn open_primary() -> (MutexGuard<'static, ()>, ScreenCapturer) {
-        let alone = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
-        (alone, ScreenCapturer::open(PRIMARY).unwrap())
-    }
+    use crate::desktop::{PRIMARY, open_primary};
 
     fn region(monitor: MonitorId, x: i32, y: i32, width: u32, height: u32) -> ScreenRect {
         ScreenRect { monitor, x, y, width, height }

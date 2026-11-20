@@ -142,6 +142,8 @@ function encodeGif(frames: SealedFrames, s: EncodeSettings, onProgress: (p: numb
 - `crates/gif-core/src/encode.rs`의 `encode_gif`가 RGB 프레임을 받아 팔레트 → 디더링 → 차분 → 압축을 한 번에 수행하는 순수 함수입니다. 설정은 `ManualSettings { colors: 2..=255, dither: 0..=1 }`입니다. `lossy`와 `maxSize` 모드는 아직 없고, 생기면 스케치의 `EncodeSettings` 합 타입으로 묶습니다.
 - `app`(Tauri 2)과 `ui`(빌드 도구 없는 정적 HTML/JS)가 생겼습니다. 지금은 샘플 영상을 `encode_gif`로 만들어 창에 보여 주는 명령 `make_sample_gif` 하나뿐입니다. 화면이 커지면 TypeScript와 번들러를 도입합니다.
 - `crates/gif-win`의 `ScreenCapturer`가 DXGI Desktop Duplication으로 모니터 하나를 열고, `capture(region)`이 그 영역의 RGB 픽셀을 돌려줍니다. 화면이 안 바뀌어 새 프레임이 없으면 마지막으로 받은 화면을 다시 씁니다. `ScreenRect`의 x, y는 그 모니터의 왼쪽 위를 (0, 0)으로 하는 물리 픽셀이고, `MonitorId`는 DXGI가 모니터를 나열하는 순서입니다. 실제 화면(2560×1440 주 모니터)에서 캡처되는 것을 확인했습니다. 복제를 연 직후의 첫 프레임은 `LastPresentTime`이 0이고 그림이 비어 있어서(전부 검정), 화면이 실제로 다시 그려진 프레임만 받아 둡니다. 회전된 모니터, `ACCESS_LOST` 복구, 해상도 축소는 아직 없습니다.
+- `gif-core`의 `schedule::frame_due(fps, index)`가 녹화 시작부터 잰 각 프레임의 예정 시각을 돌려줍니다. `gif-win`의 `record_screen`은 프레임마다 그 시각까지 기다렸다가 캡처합니다. 간격을 더해 가지 않고 시작 시각에서 매번 다시 계산하므로 캡처가 늦어도 밀림이 쌓이지 않습니다. 지금은 프레임 수를 미리 정해서 녹화하고(중간에 멈추는 신호 없음), 프레임을 모두 메모리에 둡니다.
+- 앱에 `record_screen_gif(fps, colors, dither, seconds)` 명령과 [화면 녹화] 버튼이 생겼습니다. 영역 선택이 아직 없어서 주 모니터 왼쪽 위 480×270으로 고정이고, 길이는 1~10초입니다.
 - 아직 없는 것: `done`, `failed` 상태, `recording`의 시작 시각과 프레임 수, `encoding`의 진행률, 효과 목록. 캡처와 인코더 단위에서 추가합니다.
 
 ### 상태별 소유자 (하나의 상태에 소유자는 하나)

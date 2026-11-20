@@ -1927,6 +1927,7 @@ name = "midi-app"
 version = "0.1.0"
 dependencies = [
  "gif-core",
+ "gif-win",
  "tauri",
  "tauri-build",
 ]
