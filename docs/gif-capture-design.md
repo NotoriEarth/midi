@@ -31,7 +31,7 @@ Idle ─(선택 시작)→ Selecting ─(드래그 완료)┤                   
 
 | 시스템 | 결정해야 할 것 / 함정 |
 |---|---|
-| 선택 시작 진입점 | 전역 단축키나 호스트 앱의 버튼. 호스트 앱이 정함 |
+| 선택 시작 진입점 | 앱이 트레이에 떠 있는 동안 전역 단축키(`beginSelectionHotkey`, 기본 `Win+Shift+G`)를 누르면 바로 선택 오버레이가 뜸. Windows의 Win+Shift+S와 같은 사용감. `RegisterHotKey`가 실패하면(다른 프로그램이 이미 사용 중) 알리고 설정에서 바꾸게 함. 호스트 앱의 버튼으로도 시작 가능 |
 | 선택 오버레이 | 최상위 투명 창. 모니터별 DPI(Per-Monitor v2): 논리 좌표와 물리 좌표 변환을 여기서 딱 한 번만 함 |
 | 화면 캡처 | DXGI Desktop Duplication. DXGI는 커서를 원래 포함하지 않으므로 커서 제외는 공짜. 화면이 바뀔 때만 프레임이 오므로 타임스탬프로 프레임 간격을 정함 |
 | Enter 종료 (`immediate`) | 녹화 중에만 수정키 없는 `RegisterHotKey(VK_RETURN)`을 등록하고, 끝나면 해제. **Enter가 영상 플레이어로 가지 않고 가로채짐**(일부 플레이어는 Enter가 전체 화면 전환이라 중요함) |
@@ -87,6 +87,7 @@ type ScreenRect = { monitor: MonitorId; x: number; y: number; width: number; hei
 type RecordControl = 'immediate' | 'button'   // 시작과 종료가 짝으로 묶여 있으므로 설정 하나
 
 type GifSettings = {
+  beginSelectionHotkey: Hotkey   // 수정키가 하나 이상 필요. Enter와 Esc는 고를 수 없음 (구현: crates/gif-core/src/hotkey.rs)
   recordControl: RecordControl
   capture: { fps: GifFps; scale: number; maxDurationSec: number }
   encode: EncodeSettings
@@ -118,6 +119,12 @@ interface FrameSpool {
 function encodeGif(frames: SealedFrames, s: EncodeSettings, onProgress: (p: number) => void): Promise<Bytes>
 ```
 
+### 구현 현황
+
+- `crates/gif-core/src/session.rs`의 `step(state, event, control)`이 위 전이 규칙을 순수 함수로 구현합니다. 해당하지 않는 이벤트는 상태를 바꾸지 않습니다.
+- 스케치와 다른 점: 선택 시작을 `BeginSelection` 이벤트로 넣었습니다(스케치에서는 `beginSelection()` 호출).
+- 아직 없는 것: `done`, `failed` 상태, `recording`의 시작 시각과 프레임 수, `encoding`의 진행률, 효과 목록. 캡처와 인코더 단위에서 추가합니다.
+
 ### 상태별 소유자 (하나의 상태에 소유자는 하나)
 
 | 상태 | 소유자 |
@@ -142,6 +149,8 @@ function encodeGif(frames: SealedFrames, s: EncodeSettings, onProgress: (p: numb
 | 2026-11-20 | 최종 목표는 ezgif 같은 범용 편집 도구. 이 문서의 화면 캡처는 그 안의 추가 기능 | 사용자 |
 | 2026-11-20 | 구현 스택: Tauri 2 (Rust 코어 + 웹 UI). 근거는 [ezgif-analysis.md](ezgif-analysis.md) | Claude 제안, 사용자 확정 |
 | 2026-11-20 | 설정에서 고를 수 있는 fps는 10, 15, 30 (이전 스케치의 20, 25, 50은 뺌) | 사용자 |
+| 2026-11-20 | 전역 단축키를 누르면 바로 영역 선택이 시작됨(Win+Shift+S와 같은 방식). 단축키는 설정에서 변경 가능 | 사용자 |
+| 2026-11-20 | 기본 단축키는 `Win+Shift+G` | Claude 제안, 사용자 확정 |
 | 2026-11-20 | 코드는 `/pstack:teach`로 설명할 수 있는 작은 단위로 쌓아 감(단위마다 하나의 개념, 테스트, 왜 그렇게 했는지 기록) | 사용자 |
 
 처음에 권장했던 "시작 단축키 토글"은 채택하지 않았습니다. 녹화 중 조작이 없는 용도라서 Enter가 시연 조작과 충돌할 일이 없고, 커서를 찍지 않으니 버튼 방식의 단점(버튼으로 가는 커서가 찍힘)도 사라졌기 때문입니다.
