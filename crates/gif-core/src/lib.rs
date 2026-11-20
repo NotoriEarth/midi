@@ -1,6 +1,7 @@
 pub mod delay;
 pub mod fps;
 pub mod hotkey;
+pub mod palette;
 pub mod session;
 pub mod writer;
 

@@ -136,6 +136,7 @@ function encodeGif(frames: SealedFrames, s: EncodeSettings, onProgress: (p: numb
 - `crates/gif-core/src/session.rs`의 `step(state, event, control)`이 위 전이 규칙을 순수 함수로 구현합니다. 해당하지 않는 이벤트는 상태를 바꾸지 않습니다.
 - 스케치와 다른 점: 선택 시작을 `BeginSelection` 이벤트로 넣었습니다(스케치에서는 `beginSelection()` 호출).
 - `crates/gif-core/src/writer.rs`의 `write_gif`가 팔레트 인덱스 프레임을 LZW로 압축해 GIF89a 파일로 씁니다. 프레임 차분, 팔레트 양자화, 손실 압축은 이후 단위입니다.
+- `crates/gif-core/src/palette.rs`의 `Palette::from_frames`가 모든 프레임의 색을 중앙값 분할(median cut)로 최대 256색까지 줄여 전역 팔레트를 만들고, `to_indices`가 픽셀마다 가장 가까운 팔레트 색 번호를 고릅니다. 디더링은 아직 없어서 그라데이션에 띠가 보입니다.
 - 아직 없는 것: `done`, `failed` 상태, `recording`의 시작 시각과 프레임 수, `encoding`의 진행률, 효과 목록. 캡처와 인코더 단위에서 추가합니다.
 
 ### 상태별 소유자 (하나의 상태에 소유자는 하나)
