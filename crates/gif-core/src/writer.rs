@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{GifFps, frame_delays};
 
 pub type Rgb = [u8; 3];
@@ -33,7 +35,7 @@ pub fn write_gif(
         write_frame_delay(&mut out, delay);
         write_image_position(&mut out, width, height);
         out.push(min_code_size);
-        write_sub_blocks(&mut out, &uncompressed_lzw(pixels, min_code_size));
+        write_sub_blocks(&mut out, &lzw(pixels, min_code_size));
     }
     out.push(TRAILER);
     Ok(out)
@@ -134,19 +136,45 @@ fn write_sub_blocks(out: &mut Vec<u8>, data: &[u8]) {
     out.push(BLOCK_END);
 }
 
-fn uncompressed_lzw(pixels: &[u8], min_code_size: u8) -> Vec<u8> {
+const MAX_CODE_BITS: u8 = 12;
+const CODE_TABLE_FULL: u16 = 1 << MAX_CODE_BITS;
+
+fn lzw(pixels: &[u8], min_code_size: u8) -> Vec<u8> {
     let clear = 1u16 << min_code_size;
     let end = clear + 1;
-    let code_bits = min_code_size + 1;
-    let pixels_before_codes_would_grow = usize::from(clear) - 2;
+    let first_free_code = clear + 2;
+    let starting_code_bits = min_code_size + 1;
 
+    let mut longer_runs: HashMap<(u16, u8), u16> = HashMap::new();
+    let mut next_code = first_free_code;
+    let mut code_bits = starting_code_bits;
     let mut bits = BitWriter::default();
-    for run in pixels.chunks(pixels_before_codes_would_grow) {
-        bits.push(clear, code_bits);
-        for &pixel in run {
-            bits.push(u16::from(pixel), code_bits);
+    bits.push(clear, code_bits);
+
+    let mut run = u16::from(pixels[0]);
+    for &pixel in &pixels[1..] {
+        if let Some(&longer) = longer_runs.get(&(run, pixel)) {
+            run = longer;
+            continue;
         }
+
+        bits.push(run, code_bits);
+        if next_code == CODE_TABLE_FULL {
+            bits.push(clear, code_bits);
+            longer_runs.clear();
+            next_code = first_free_code;
+            code_bits = starting_code_bits;
+        } else {
+            longer_runs.insert((run, pixel), next_code);
+            if next_code == 1 << code_bits {
+                code_bits += 1;
+            }
+            next_code += 1;
+        }
+        run = u16::from(pixel);
     }
+
+    bits.push(run, code_bits);
     bits.push(end, code_bits);
     bits.finish()
 }
@@ -234,6 +262,40 @@ mod tests {
         let pixels: Vec<u8> = (0..64 * 48).map(|index| (index % 256) as u8).collect();
         let bytes = write_gif(64, 48, &palette, &[&pixels], GifFps::Fps15).unwrap();
         assert_eq!(decode(&bytes).frames[0].1, pixels);
+    }
+
+    #[test]
+    fn a_flat_image_compresses_to_a_fraction_of_its_pixel_count() {
+        let pixels = [1u8; 100 * 100];
+        let bytes = write_gif(100, 100, &[BLACK, RED], &[&pixels], GifFps::Fps10).unwrap();
+        assert!(bytes.len() < 300, "{} bytes for 10000 pixels", bytes.len());
+        assert_eq!(decode(&bytes).frames[0].1, pixels);
+    }
+
+    #[test]
+    fn noise_that_fills_the_code_table_many_times_survives_the_round_trip() {
+        let palette: Vec<Rgb> = (0..=255).map(|value| [value, 0, 255 - value]).collect();
+        let mut seed = 0x2545_F491u32;
+        let pixels: Vec<u8> = (0..300 * 200)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                (seed >> 24) as u8
+            })
+            .collect();
+        let bytes = write_gif(300, 200, &palette, &[&pixels], GifFps::Fps10).unwrap();
+        assert_eq!(decode(&bytes).frames[0].1, pixels);
+    }
+
+    #[test]
+    fn a_repeating_pattern_survives_the_round_trip_at_every_palette_size() {
+        for color_count in [1usize, 2, 3, 4, 5, 16, 17, 128, 256] {
+            let palette = vec![BLACK; color_count];
+            let pixels: Vec<u8> = (0..97 * 61).map(|index| ((index / 7) % color_count) as u8).collect();
+            let bytes = write_gif(97, 61, &palette, &[&pixels], GifFps::Fps10).unwrap();
+            assert_eq!(decode(&bytes).frames[0].1, pixels, "{color_count} colors");
+        }
     }
 
     #[test]
