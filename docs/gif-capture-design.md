@@ -21,6 +21,17 @@ Idle ─(선택 시작)→ Selecting ─(드래그 완료)┤                   
 | `immediate` | 드래그를 마치는 순간 | Enter |
 | `button` | 영역 밖에 뜨는 [시작] 버튼 클릭 | 같은 버튼이 [끝]으로 바뀜 → 클릭 |
 
+**영역을 정하는 방식**은 설정의 `selection`으로 고릅니다.
+
+| `selection` | 영역 정하기 |
+|---|---|
+| `drag` | 단축키 → 화면이 어두워짐 → 드래그 (위 흐름 그대로) |
+| `frame` | 단축키 → 지난번 위치와 크기 그대로 **녹화 틀**이 뜸(Selecting을 건너뛰고 바로 Armed) → 틀의 상하좌우 가장자리를 끌어 크기를 바꾸거나 틀을 옮김 → [시작] 클릭 |
+
+- `frame`에서는 드래그가 없으므로 `recordControl`이 `immediate`여도 시작은 [시작] 버튼입니다. 종료는 `recordControl`을 따릅니다(`immediate`면 Enter, `button`이면 [끝]). *(Claude 제안, 확인 대기)*
+- Armed 동안에는 틀을 옮기거나 크기를 바꿀 수 있고(`RegionChanged`), 녹화가 시작되면 영역은 고정됩니다. `drag` + `button` 조합에서도 Armed 동안 같은 방식으로 영역을 다듬을 수 있습니다.
+- 틀은 영역 바깥에 그리는 테두리와 손잡이로 이루어지고 `WDA_EXCLUDEFROMCAPTURE`로 캡처에서 빠집니다. 틀 안쪽은 클릭이 통과해서 영상 플레이어를 그대로 조작할 수 있습니다.
+
 - Esc는 인코딩 전의 모든 단계(Selecting, Armed, Recording)에서 취소입니다. 두 모드 공통이고, Recording에서 취소하면 쌓인 프레임을 버리고 Idle로 돌아갑니다.
 - `button` 모드에서는 [끝] 옆에 [✕] 버튼도 둡니다(마우스로 쓰는 모드라서).
 - 최대 녹화 길이(`maxDurationSec`)에 도달하면 종료한 것과 똑같이 인코딩합니다. 녹화를 잊어버렸을 때를 위한 안전장치입니다.
@@ -88,6 +99,7 @@ type RecordControl = 'immediate' | 'button'   // 시작과 종료가 짝으로 �
 
 type GifSettings = {
   beginSelectionHotkey: Hotkey   // 수정키가 하나 이상 필요. Enter와 Esc는 고를 수 없음 (구현: crates/gif-core/src/hotkey.rs)
+  selection: 'drag' | 'frame'    // frame이면 마지막 틀 위치와 크기도 함께 저장
   recordControl: RecordControl
   capture: { fps: GifFps; scale: number; maxDurationSec: number }
   encode: EncodeSettings
@@ -151,6 +163,9 @@ function encodeGif(frames: SealedFrames, s: EncodeSettings, onProgress: (p: numb
 | 2026-11-20 | 설정에서 고를 수 있는 fps는 10, 15, 30 (이전 스케치의 20, 25, 50은 뺌) | 사용자 |
 | 2026-11-20 | 전역 단축키를 누르면 바로 영역 선택이 시작됨(Win+Shift+S와 같은 방식). 단축키는 설정에서 변경 가능 | 사용자 |
 | 2026-11-20 | 기본 단축키는 `Win+Shift+G` | Claude 제안, 사용자 확정 |
+| 2026-11-20 | 드래그 외에, 상하좌우로 크기를 조절하는 녹화 틀로 영역을 정하는 방식을 설정에서 고를 수 있음 | 사용자 |
+| 2026-11-20 | 녹화 중에는 영역 고정(틀 이동과 크기 변경 불가) | Claude 제안, 사용자 확정 |
+| (확인 대기) | 녹화 틀 방식의 시작은 항상 [시작] 버튼, 종료는 `recordControl`을 따름 | Claude 제안 |
 | 2026-11-20 | 코드는 `/pstack:teach`로 설명할 수 있는 작은 단위로 쌓아 감(단위마다 하나의 개념, 테스트, 왜 그렇게 했는지 기록) | 사용자 |
 
 처음에 권장했던 "시작 단축키 토글"은 채택하지 않았습니다. 녹화 중 조작이 없는 용도라서 Enter가 시연 조작과 충돌할 일이 없고, 커서를 찍지 않으니 버튼 방식의 단점(버튼으로 가는 커서가 찍힘)도 사라졌기 때문입니다.
