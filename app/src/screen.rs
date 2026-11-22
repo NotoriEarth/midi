@@ -2,6 +2,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use gif_core::GifFps;
 use gif_core::encode::{ManualSettings, encode_gif};
+use gif_core::resize::{ResizeError, scaled_size};
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
 use gif_win::{CaptureError, ScreenCapturer, record_screen, select_region};
@@ -34,15 +35,20 @@ impl Recorder {
         fps: u32,
         colors: usize,
         dither: f32,
-        on_recording: impl FnOnce(ScreenRect),
+        scale_percent: u32,
+        on_recording: impl FnOnce(ScreenRect, (u32, u32)),
     ) -> Result<Option<Vec<u8>>, String> {
         let fps = parse_fps(fps)?;
         let settings = ManualSettings { colors, dither };
         settings.check().map_err(explain_encode)?;
+        scaled_size(1, 1, scale_percent).map_err(explain_resize)?;
 
         let _back_to_idle = self.begin()?;
         match select_region(PRIMARY).map_err(explain_capture)? {
-            Some(region) => self.record_region(region, fps, settings, on_recording),
+            Some(region) => {
+                let output_size = scaled_size(region.width, region.height, scale_percent).map_err(explain_resize)?;
+                self.record_region(region, output_size, fps, settings, on_recording)
+            }
             None => Ok(None),
         }
     }
@@ -58,23 +64,24 @@ impl Recorder {
     fn record_region(
         &self,
         region: ScreenRect,
+        output_size: (u32, u32),
         fps: GifFps,
         settings: ManualSettings,
-        on_recording: impl FnOnce(ScreenRect),
+        on_recording: impl FnOnce(ScreenRect, (u32, u32)),
     ) -> Result<Option<Vec<u8>>, String> {
         let mut capturer = ScreenCapturer::open(region.monitor).map_err(explain_capture)?;
         *self.phase() = Phase::Recording;
-        on_recording(region);
+        on_recording(region, output_size);
 
         let keep_going = || *self.phase() == Phase::Recording;
-        let frames = record_screen(&mut capturer, region, fps, max_frames(fps, region), keep_going)
+        let frames = record_screen(&mut capturer, region, output_size, fps, max_frames(fps, output_size), keep_going)
             .map_err(explain_capture)?;
 
         if !self.encode_unless_cancelled() {
             return Ok(None);
         }
         let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        encode_gif(region.width as u16, region.height as u16, &frames, fps, settings)
+        encode_gif(output_size.0 as u16, output_size.1 as u16, &frames, fps, settings)
             .map(Some)
             .map_err(explain_encode)
     }
@@ -124,10 +131,17 @@ impl std::fmt::Debug for Recorder {
     }
 }
 
-fn max_frames(fps: GifFps, region: ScreenRect) -> u32 {
-    let bytes_per_frame = u64::from(region.width) * u64::from(region.height) * size_of::<Rgb>() as u64;
+fn max_frames(fps: GifFps, (width, height): (u32, u32)) -> u32 {
+    let bytes_per_frame = u64::from(width) * u64::from(height) * size_of::<Rgb>() as u64;
     let frames_in_memory = (MAX_FRAME_BYTES / bytes_per_frame.max(1)).max(1);
     (fps.per_second() * MAX_SECONDS).min(frames_in_memory as u32)
+}
+
+fn explain_resize(error: ResizeError) -> String {
+    match error {
+        ResizeError::ScalePercent(percent) => format!("해상도는 10~100% 사이여야 합니다: {percent}"),
+        other => format!("크기를 줄이지 못했습니다: {other:?}"),
+    }
 }
 
 fn explain_capture(error: CaptureError) -> String {
@@ -152,10 +166,6 @@ mod tests {
     const SMALL: ScreenRect = ScreenRect { monitor: PRIMARY, x: 0, y: 0, width: 160, height: 90 };
     const SETTINGS: ManualSettings = ManualSettings { colors: 64, dither: 0.5 };
 
-    fn region(width: u32, height: u32) -> ScreenRect {
-        ScreenRect { width, height, ..SMALL }
-    }
-
     fn after(delay: Duration, action: impl FnOnce() + Send) -> impl FnOnce() + Send {
         move || {
             thread::sleep(delay);
@@ -167,10 +177,11 @@ mod tests {
     fn bad_settings_are_explained_before_anything_is_selected() {
         let recorder = Recorder::default();
         assert_eq!(
-            recorder.record(60, 64, 0.5, |_| {}),
+            recorder.record(60, 64, 0.5, 100, |_, _| {}),
             Err("지원하지 않는 fps입니다: 60 (10, 15, 30 중에서 고르세요)".to_string())
         );
-        assert_eq!(recorder.record(15, 1, 0.5, |_| {}), Err("색 수는 2~255 사이여야 합니다: 1".to_string()));
+        assert_eq!(recorder.record(15, 1, 0.5, 100, |_, _| {}), Err("색 수는 2~255 사이여야 합니다: 1".to_string()));
+        assert_eq!(recorder.record(15, 64, 0.5, 5, |_, _| {}), Err("해상도는 10~100% 사이여야 합니다: 5".to_string()));
         assert_eq!(*recorder.phase(), Phase::Idle);
     }
 
@@ -191,7 +202,7 @@ mod tests {
     fn a_second_recording_is_refused_while_one_is_running() {
         let recorder = Recorder::default();
         let _session = recorder.begin().unwrap();
-        assert_eq!(recorder.record(15, 64, 0.5, |_| {}), Err("이미 녹화하고 있습니다.".to_string()));
+        assert_eq!(recorder.record(15, 64, 0.5, 100, |_, _| {}), Err("이미 녹화하고 있습니다.".to_string()));
         assert_eq!(*recorder.phase(), Phase::Selecting);
     }
 
@@ -213,13 +224,13 @@ mod tests {
 
     #[test]
     fn a_small_region_may_record_for_the_full_thirty_seconds() {
-        assert_eq!(max_frames(GifFps::Fps30, region(480, 270)), 900);
-        assert_eq!(max_frames(GifFps::Fps10, region(480, 270)), 300);
+        assert_eq!(max_frames(GifFps::Fps30, (480, 270)), 900);
+        assert_eq!(max_frames(GifFps::Fps10, (480, 270)), 300);
     }
 
     #[test]
     fn a_large_region_stops_earlier_so_its_frames_fit_in_a_gigabyte() {
-        let frames = max_frames(GifFps::Fps30, region(2560, 1440));
+        let frames = max_frames(GifFps::Fps30, (2560, 1440));
         assert_eq!(frames, 97);
         assert!(u64::from(frames) * 2560 * 1440 * 3 <= MAX_FRAME_BYTES);
     }
@@ -234,15 +245,15 @@ mod tests {
         let started = Instant::now();
         let gif = thread::scope(|scope| {
             scope.spawn(after(Duration::from_millis(600), || recorder.stop()));
-            recorder.record_region(SMALL, GifFps::Fps10, SETTINGS, |region| told = Some(region))
+            recorder.record_region(SMALL, (80, 45), GifFps::Fps10, SETTINGS, |region, size| told = Some((region, size)))
         });
         let took = started.elapsed();
         drop(session);
 
         let gif = gif.unwrap().expect("a stopped recording gives a GIF");
         assert!(gif.starts_with(b"GIF89a"), "{} bytes", gif.len());
-        assert_eq!(gif[6..10], [160, 0, 90, 0], "the GIF is as large as the region");
-        assert_eq!(told, Some(SMALL));
+        assert_eq!(gif[6..10], [80, 0, 45, 0], "the GIF is as large as the output size");
+        assert_eq!(told, Some((SMALL, (80, 45))));
         assert!(took >= Duration::from_millis(600), "{took:?}");
         assert_eq!(*recorder.phase(), Phase::Idle);
     }
@@ -255,7 +266,7 @@ mod tests {
         let _session = recorder.begin().unwrap();
         let gif = thread::scope(|scope| {
             scope.spawn(after(Duration::from_millis(300), || recorder.cancel()));
-            recorder.record_region(SMALL, GifFps::Fps10, SETTINGS, |_| {})
+            recorder.record_region(SMALL, (160, 90), GifFps::Fps10, SETTINGS, |_, _| {})
         });
         assert_eq!(gif, Ok(None));
     }

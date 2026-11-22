@@ -92,14 +92,15 @@ fn record_screen_gif(
     fps: u32,
     colors: usize,
     dither: f32,
+    scale: u32,
 ) -> Result<Response, String> {
     let _keys = KeysWhileRecording(&hotkeys);
     let _ = hotkeys.register(CANCEL_KEY, KeyCombo::ESCAPE);
-    let tell_the_page = |region: ScreenRect| {
+    let tell_the_page = |region: ScreenRect, output_size: (u32, u32)| {
         let _ = hotkeys.register(STOP_KEY, KeyCombo::ENTER);
-        let _ = window.emit(RECORDING_STARTED, (region.width, region.height));
+        let _ = window.emit(RECORDING_STARTED, ((region.width, region.height), output_size));
     };
-    let gif = recorder.record(fps, colors, dither, tell_the_page)?;
+    let gif = recorder.record(fps, colors, dither, scale, tell_the_page)?;
     if let Some(gif) = &gif {
         let saved = save_to_pictures(window.app_handle(), gif);
         let _ = window.emit(GIF_SAVED, saved.as_ref().map(|path| path.display().to_string()));

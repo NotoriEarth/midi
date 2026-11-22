@@ -5,6 +5,7 @@ const form = document.querySelector("#settings");
 const fps = document.querySelector("#fps");
 const colors = document.querySelector("#colors");
 const dither = document.querySelector("#dither");
+const scale = document.querySelector("#scale");
 const make = document.querySelector("#make");
 const record = document.querySelector("#record");
 const cancel = document.querySelector("#cancel");
@@ -69,15 +70,16 @@ record.addEventListener("click", async () => {
     return;
   }
   record.disabled = true;
-  await showGif("record_screen_gif", settings(), "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.");
+  await showGif("record_screen_gif", { ...settings(), scale: Number(scale.value) }, "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.");
   record.disabled = false;
   showRecording(false);
 });
 
-listen("recording-started", ({ payload: [width, height] }) => {
+listen("recording-started", ({ payload: [[width, height], [outWidth, outHeight]] }) => {
+  const size = width === outWidth ? `${width}×${height}` : `${width}×${height} 영역을 ${outWidth}×${outHeight} 크기로`;
   record.disabled = false;
   showRecording(true);
-  status.textContent = `${width}×${height} 녹화하는 중… Enter나 [끝]으로 마치고, Esc나 [✕]로 취소합니다.`;
+  status.textContent = `${size} 녹화하는 중… Enter나 [끝]으로 마치고, Esc나 [✕]로 취소합니다.`;
 });
 
 const saved = document.querySelector("#saved");

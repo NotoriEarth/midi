@@ -6,6 +6,7 @@ pub mod fps;
 pub mod hotkey;
 pub mod output;
 pub mod palette;
+pub mod resize;
 pub mod schedule;
 pub mod selection;
 pub mod session;

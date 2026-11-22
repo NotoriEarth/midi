@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use gif_core::GifFps;
+use gif_core::resize::downscale;
 use gif_core::schedule::frame_due;
 use gif_core::session::ScreenRect;
 use gif_core::writer::Rgb;
@@ -10,13 +11,19 @@ use crate::{CaptureError, ScreenCapturer};
 pub fn record_screen(
     capturer: &mut ScreenCapturer,
     region: ScreenRect,
+    output_size: (u32, u32),
     fps: GifFps,
     max_frames: u32,
     keep_going: impl FnMut() -> bool,
 ) -> Result<Vec<Vec<Rgb>>, CaptureError> {
     let started = Instant::now();
     let sleep_until = |due: Duration| std::thread::sleep((started + due).saturating_duration_since(Instant::now()));
-    record_frames(fps, max_frames, || capturer.capture(region), sleep_until, keep_going)
+    let grab = || {
+        let pixels = capturer.capture(region)?;
+        downscale(&pixels, (region.width, region.height), output_size)
+            .map_err(|error| CaptureError::System(format!("the frame could not be resized: {error:?}")))
+    };
+    record_frames(fps, max_frames, grab, sleep_until, keep_going)
 }
 
 fn record_frames<Frame, Error>(
@@ -146,11 +153,11 @@ mod tests {
         let region = ScreenRect { monitor: crate::desktop::PRIMARY, x: 0, y: 0, width: 64, height: 48 };
 
         let started = Instant::now();
-        let frames = record_screen(&mut capturer, region, GifFps::Fps10, 6, || true).unwrap();
+        let frames = record_screen(&mut capturer, region, (32, 24), GifFps::Fps10, 6, || true).unwrap();
         let took = started.elapsed();
 
         assert_eq!(frames.len(), 6);
-        assert!(frames.iter().all(|frame| frame.len() == 64 * 48));
+        assert!(frames.iter().all(|frame| frame.len() == 32 * 24));
         assert!(took >= ms(500) && took < ms(900), "{took:?}");
     }
 }

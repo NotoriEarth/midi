@@ -28,6 +28,16 @@
           디더링 강도 <output id="dither-value">1</output>
           <input id="dither" type="range" min="0" max="1" step="0.05" value="1" />
         </label>
+        <label>
+          녹화 해상도
+          <select id="scale">
+            <option value="100" selected>100% (그대로)</option>
+            <option value="75">75%</option>
+            <option value="50">50%</option>
+            <option value="33">33%</option>
+            <option value="25">25%</option>
+          </select>
+        </label>
         <div class="actions">
           <button id="make" type="submit">샘플 만들기</button>
           <button id="record" type="button">녹화 시작</button>
