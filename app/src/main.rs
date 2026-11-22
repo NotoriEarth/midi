@@ -8,7 +8,6 @@ mod settings;
 
 use gif_core::fit::LEVELS;
 use gif_core::hotkey::Hotkey;
-use gif_core::session::ScreenRect;
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::process::Command;
@@ -19,7 +18,7 @@ use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use choice::QualityChoice;
-use screen::Recorder;
+use screen::{Recorded, Recorder, Started};
 use settings::RecordSettings;
 
 #[tauri::command]
@@ -128,17 +127,19 @@ fn record_screen_gif(
     let _keys = KeysWhileRecording(&hotkeys);
     let _ = hotkeys.register(CANCEL_KEY, KeyCombo::ESCAPE);
     let recorded_size = Cell::new((0, 0));
-    let tell_the_page = |region: ScreenRect, output_size: (u32, u32)| {
-        recorded_size.set(output_size);
+    let tell_the_page = |started: Started| {
+        recorded_size.set(started.output_size);
         let _ = hotkeys.register(STOP_KEY, KeyCombo::ENTER);
-        let _ = window.emit(RECORDING_STARTED, ((region.width, region.height), output_size));
+        let region = (started.region.width, started.region.height);
+        let _ = window.emit(RECORDING_STARTED, (region, started.output_size, started.limit_ms, started.limited_by));
     };
-    let encoded = recorder.record(settings.fps, settings.encode_settings()?, settings.output_size(), tell_the_page)?;
-    if let Some(encoded) = &encoded {
+    let recorded = recorder.record(settings.fps, settings.encode_settings()?, settings.output_size(), tell_the_page)?;
+    if let Some(Recorded { encoded, ended_at_limit }) = &recorded {
         let final_size = (encoded.width, encoded.height);
-        let _ = window.emit(GIF_ENCODED, (encoded.level, encoded.within_limit, recorded_size.get(), final_size));
+        let made = (encoded.level, encoded.within_limit, recorded_size.get(), final_size, ended_at_limit);
+        let _ = window.emit(GIF_ENCODED, made);
     }
-    let gif = encoded.map(|encoded| encoded.gif);
+    let gif = recorded.map(|recorded| recorded.encoded.gif);
     if let Some(gif) = &gif {
         let saved = save_to_pictures(window.app_handle(), gif);
         let _ = window.emit(GIF_SAVED, saved.as_ref().map(|path| path.display().to_string()));

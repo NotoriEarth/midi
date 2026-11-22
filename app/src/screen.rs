@@ -24,6 +24,45 @@ enum Phase {
     Encoding,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LimitedBy {
+    Time,
+    Memory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordingLimit {
+    pub frames: u32,
+    pub by: LimitedBy,
+}
+
+impl RecordingLimit {
+    fn milliseconds(self, fps: GifFps) -> u32 {
+        self.frames * 1000 / fps.per_second()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Started {
+    pub region: ScreenRect,
+    pub output_size: (u32, u32),
+    pub limit_ms: u32,
+    pub limited_by: LimitedBy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recorded {
+    pub encoded: Encoded,
+    pub ended_at_limit: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ending {
+    Asked,
+    AtLimit,
+}
+
 #[derive(Default)]
 pub struct Recorder {
     phase: Mutex<Phase>,
@@ -35,8 +74,8 @@ impl Recorder {
         fps: u32,
         settings: EncodeSettings,
         size: OutputSize,
-        on_recording: impl FnOnce(ScreenRect, (u32, u32)),
-    ) -> Result<Option<Encoded>, String> {
+        on_recording: impl FnOnce(Started),
+    ) -> Result<Option<Recorded>, String> {
         let fps = parse_fps(fps)?;
         settings.check().map_err(explain_encode)?;
         size.check().map_err(explain_resize)?;
@@ -45,7 +84,8 @@ impl Recorder {
         match select_region(PRIMARY).map_err(explain_capture)? {
             Some(region) => {
                 let output_size = size.for_source(region.width, region.height).map_err(explain_resize)?;
-                self.record_region(region, output_size, fps, settings, on_recording)
+                let limit = recording_limit(fps, output_size);
+                self.record_region(region, output_size, fps, limit, settings, on_recording)
             }
             None => Ok(None),
         }
@@ -64,22 +104,25 @@ impl Recorder {
         region: ScreenRect,
         output_size: (u32, u32),
         fps: GifFps,
+        limit: RecordingLimit,
         settings: EncodeSettings,
-        on_recording: impl FnOnce(ScreenRect, (u32, u32)),
-    ) -> Result<Option<Encoded>, String> {
+        on_recording: impl FnOnce(Started),
+    ) -> Result<Option<Recorded>, String> {
         let mut capturer = ScreenCapturer::open(region.monitor).map_err(explain_capture)?;
         *self.phase() = Phase::Recording;
-        on_recording(region, output_size);
+        on_recording(Started { region, output_size, limit_ms: limit.milliseconds(fps), limited_by: limit.by });
 
         let keep_going = || *self.phase() == Phase::Recording;
-        let frames = record_screen(&mut capturer, region, output_size, fps, max_frames(fps, output_size), keep_going)
-            .map_err(explain_capture)?;
+        let frames =
+            record_screen(&mut capturer, region, output_size, fps, limit.frames, keep_going).map_err(explain_capture)?;
 
-        if !self.encode_unless_cancelled() {
+        let Some(ending) = self.encode_unless_cancelled() else {
             return Ok(None);
-        }
+        };
         let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        encode(output_size.0 as u16, output_size.1 as u16, &frames, fps, settings).map(Some).map_err(explain_encode)
+        let encoded =
+            encode(output_size.0 as u16, output_size.1 as u16, &frames, fps, settings).map_err(explain_encode)?;
+        Ok(Some(Recorded { encoded, ended_at_limit: ending == Ending::AtLimit }))
     }
 
     fn phase(&self) -> MutexGuard<'_, Phase> {
@@ -102,13 +145,14 @@ impl Recorder {
         }
     }
 
-    fn encode_unless_cancelled(&self) -> bool {
+    fn encode_unless_cancelled(&self) -> Option<Ending> {
         let mut phase = self.phase();
-        let cancelled = *phase == Phase::CancelAsked;
-        if !cancelled {
-            *phase = Phase::Encoding;
+        if *phase == Phase::CancelAsked {
+            return None;
         }
-        !cancelled
+        let ending = if *phase == Phase::Recording { Ending::AtLimit } else { Ending::Asked };
+        *phase = Phase::Encoding;
+        Some(ending)
     }
 }
 
@@ -127,10 +171,15 @@ impl std::fmt::Debug for Recorder {
     }
 }
 
-fn max_frames(fps: GifFps, (width, height): (u32, u32)) -> u32 {
+fn recording_limit(fps: GifFps, (width, height): (u32, u32)) -> RecordingLimit {
     let bytes_per_frame = u64::from(width) * u64::from(height) * size_of::<Rgb>() as u64;
     let frames_in_memory = (MAX_FRAME_BYTES / bytes_per_frame.max(1)).max(1);
-    (fps.per_second() * MAX_SECONDS).min(frames_in_memory as u32)
+    let frames_in_time = u64::from(fps.per_second() * MAX_SECONDS);
+    if frames_in_memory < frames_in_time {
+        RecordingLimit { frames: frames_in_memory as u32, by: LimitedBy::Memory }
+    } else {
+        RecordingLimit { frames: frames_in_time as u32, by: LimitedBy::Time }
+    }
 }
 
 fn explain_resize(error: ResizeError) -> String {
@@ -165,6 +214,7 @@ mod tests {
     const NO_SUCH_LEVEL: EncodeSettings = EncodeSettings { quality: Quality::Level(9), ..SETTINGS };
     const NO_ROOM: EncodeSettings =
         EncodeSettings { quality: Quality::WithinBytes { max_bytes: 0, adjust: Adjust::Level }, ..SETTINGS };
+    const LONG: RecordingLimit = RecordingLimit { frames: 300, by: LimitedBy::Time };
     const ORIGINAL: OutputSize = OutputSize::Original;
     const NO_WIDTH: OutputSize = OutputSize::FitWithin { width: 0, height: 270 };
 
@@ -179,19 +229,19 @@ mod tests {
     fn bad_settings_are_explained_before_anything_is_selected() {
         let recorder = Recorder::default();
         assert_eq!(
-            recorder.record(60, SETTINGS, ORIGINAL, |_, _| {}),
+            recorder.record(60, SETTINGS, ORIGINAL, |_| {}),
             Err("지원하지 않는 fps입니다: 60 (10, 15, 30 중에서 고르세요)".to_string())
         );
         assert_eq!(
-            recorder.record(15, NO_SUCH_LEVEL, ORIGINAL, |_, _| {}),
+            recorder.record(15, NO_SUCH_LEVEL, ORIGINAL, |_| {}),
             Err("화질 단계는 1~6 사이여야 합니다: 9".to_string())
         );
         assert_eq!(
-            recorder.record(15, SETTINGS, NO_WIDTH, |_, _| {}),
+            recorder.record(15, SETTINGS, NO_WIDTH, |_| {}),
             Err("크기는 가로와 세로 모두 1 이상이어야 합니다.".to_string())
         );
         assert_eq!(
-            recorder.record(15, NO_ROOM, ORIGINAL, |_, _| {}),
+            recorder.record(15, NO_ROOM, ORIGINAL, |_| {}),
             Err("용량 목표는 1바이트 이상이어야 합니다: 0".to_string())
         );
         assert_eq!(*recorder.phase(), Phase::Idle);
@@ -214,7 +264,7 @@ mod tests {
     fn a_second_recording_is_refused_while_one_is_running() {
         let recorder = Recorder::default();
         let _session = recorder.begin().unwrap();
-        assert_eq!(recorder.record(15, SETTINGS, ORIGINAL, |_, _| {}), Err("이미 녹화하고 있습니다.".to_string()));
+        assert_eq!(recorder.record(15, SETTINGS, ORIGINAL, |_| {}), Err("이미 녹화하고 있습니다.".to_string()));
         assert_eq!(*recorder.phase(), Phase::Selecting);
     }
 
@@ -231,20 +281,47 @@ mod tests {
         *recorder.phase() = Phase::Recording;
         recorder.cancel();
         recorder.stop();
-        assert!(!recorder.encode_unless_cancelled());
+        assert_eq!(recorder.encode_unless_cancelled(), None);
+    }
+
+    #[test]
+    fn a_recording_that_was_stopped_ended_because_it_was_asked_to() {
+        let recorder = Recorder::default();
+        *recorder.phase() = Phase::Recording;
+        recorder.stop();
+        assert_eq!(recorder.encode_unless_cancelled(), Some(Ending::Asked));
+        assert_eq!(*recorder.phase(), Phase::Encoding);
+    }
+
+    #[test]
+    fn a_recording_nobody_stopped_ended_at_its_limit() {
+        let recorder = Recorder::default();
+        *recorder.phase() = Phase::Recording;
+        assert_eq!(recorder.encode_unless_cancelled(), Some(Ending::AtLimit));
+        assert_eq!(*recorder.phase(), Phase::Encoding);
     }
 
     #[test]
     fn a_small_region_may_record_for_the_full_thirty_seconds() {
-        assert_eq!(max_frames(GifFps::Fps30, (480, 270)), 900);
-        assert_eq!(max_frames(GifFps::Fps10, (480, 270)), 300);
+        let by = LimitedBy::Time;
+        assert_eq!(recording_limit(GifFps::Fps30, (480, 270)), RecordingLimit { frames: 900, by });
+        assert_eq!(recording_limit(GifFps::Fps10, (480, 270)), RecordingLimit { frames: 300, by });
+        assert_eq!(RecordingLimit { frames: 900, by }.milliseconds(GifFps::Fps30), 30_000);
     }
 
     #[test]
     fn a_large_region_stops_earlier_so_its_frames_fit_in_a_gigabyte() {
-        let frames = max_frames(GifFps::Fps30, (2560, 1440));
-        assert_eq!(frames, 97);
-        assert!(u64::from(frames) * 2560 * 1440 * 3 <= MAX_FRAME_BYTES);
+        let limit = recording_limit(GifFps::Fps30, (2560, 1440));
+        assert_eq!(limit, RecordingLimit { frames: 97, by: LimitedBy::Memory });
+        assert!(u64::from(limit.frames) * 2560 * 1440 * 3 <= MAX_FRAME_BYTES);
+        assert_eq!(limit.milliseconds(GifFps::Fps30), 3233);
+    }
+
+    #[test]
+    fn a_region_whose_frames_fit_exactly_is_limited_by_time() {
+        let thirty_seconds_fill_a_gigabyte = (1 << 15, (1 << 15) / (3 * 300));
+        let limit = recording_limit(GifFps::Fps10, thirty_seconds_fill_a_gigabyte);
+        assert_eq!(limit, RecordingLimit { frames: 300, by: LimitedBy::Time });
     }
 
     #[test]
@@ -257,15 +334,18 @@ mod tests {
         let started = Instant::now();
         let gif = thread::scope(|scope| {
             scope.spawn(after(Duration::from_millis(600), || recorder.stop()));
-            recorder.record_region(SMALL, (80, 45), GifFps::Fps10, SETTINGS, |region, size| told = Some((region, size)))
+            recorder.record_region(SMALL, (80, 45), GifFps::Fps10, LONG, SETTINGS, |started| told = Some(started))
         });
         let took = started.elapsed();
         drop(session);
 
-        let gif = gif.unwrap().expect("a stopped recording gives a GIF").gif;
+        let recorded = gif.unwrap().expect("a stopped recording gives a GIF");
+        assert!(!recorded.ended_at_limit);
+        let gif = recorded.encoded.gif;
         assert!(gif.starts_with(b"GIF89a"), "{} bytes", gif.len());
         assert_eq!(gif[6..10], [80, 0, 45, 0], "the GIF is as large as the output size");
-        assert_eq!(told, Some((SMALL, (80, 45))));
+        let started = Started { region: SMALL, output_size: (80, 45), limit_ms: 30_000, limited_by: LimitedBy::Time };
+        assert_eq!(told, Some(started));
         assert!(took >= Duration::from_millis(600), "{took:?}");
         assert_eq!(*recorder.phase(), Phase::Idle);
     }
@@ -278,8 +358,27 @@ mod tests {
         let _session = recorder.begin().unwrap();
         let gif = thread::scope(|scope| {
             scope.spawn(after(Duration::from_millis(300), || recorder.cancel()));
-            recorder.record_region(SMALL, (160, 90), GifFps::Fps10, SETTINGS, |_, _| {})
+            recorder.record_region(SMALL, (160, 90), GifFps::Fps10, LONG, SETTINGS, |_| {})
         });
         assert_eq!(gif, Ok(None));
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn a_recording_left_alone_ends_at_its_limit_and_says_so() {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+        let recorder = Recorder::default();
+        let _session = recorder.begin().unwrap();
+        let three_frames = RecordingLimit { frames: 3, by: LimitedBy::Memory };
+        let mut told = None;
+
+        let recorded = recorder
+            .record_region(SMALL, (160, 90), GifFps::Fps10, three_frames, SETTINGS, |started| told = Some(started))
+            .unwrap()
+            .expect("a recording that reached its limit gives a GIF");
+
+        assert!(recorded.ended_at_limit);
+        let started = told.unwrap();
+        assert_eq!((started.limit_ms, started.limited_by), (300, LimitedBy::Memory));
     }
 }

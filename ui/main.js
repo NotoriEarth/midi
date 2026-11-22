@@ -27,6 +27,19 @@ const hotkey = document.querySelector("#hotkey");
 const BYTES_PER_MB = 1024 * 1024;
 let levels = [];
 let recording = false;
+let limit = { milliseconds: 0, by: "time" };
+let countdown = 0;
+
+function seconds(milliseconds) {
+  return `${Number((milliseconds / 1000).toFixed(1))}초`;
+}
+
+function whyItEnded() {
+  return limit.by === "time"
+    ? `최대 길이 ${seconds(limit.milliseconds)}에 닿아 녹화를 끝냈습니다.`
+    : `이 크기와 fps에서는 메모리 한도 때문에 ${seconds(limit.milliseconds)}까지만 녹화할 수 있어 거기서 끝냈습니다. ` +
+        "크기를 줄이거나 fps를 낮추면 더 길게 녹화할 수 있습니다.";
+}
 
 function describeLevel(number) {
   const [colors, tolerance] = levels[number - 1];
@@ -104,6 +117,7 @@ function showSettings(saved) {
 
 function showRecording(now) {
   recording = now;
+  clearInterval(countdown);
   record.textContent = now ? "끝" : "녹화 시작";
   cancel.hidden = !now;
   make.disabled = now;
@@ -141,6 +155,7 @@ form.addEventListener("submit", (event) => {
 
 record.addEventListener("click", async () => {
   if (recording) {
+    clearInterval(countdown);
     status.textContent = "GIF로 만드는 중…";
     invoke("stop_recording");
     return;
@@ -157,17 +172,32 @@ showSaved.addEventListener("click", () => {
   invoke("show_saved_gif").catch((problem) => (savedPath.textContent = problem));
 });
 
-listen("recording-started", ({ payload: [[width, height], [outWidth, outHeight]] }) => {
+listen("recording-started", ({ payload: [[width, height], [outWidth, outHeight], milliseconds, by] }) => {
   const size =
     width === outWidth && height === outHeight
       ? `${width}×${height}`
       : `${width}×${height} 영역을 ${outWidth}×${outHeight} 크기로`;
+  limit = { milliseconds, by };
+  const most = by === "memory" ? ` (이 크기와 fps에서는 최대 ${seconds(milliseconds)})` : "";
+  const started = performance.now();
+  const showTimeLeft = () => {
+    const left = milliseconds - (performance.now() - started);
+    if (left <= 0) {
+      clearInterval(countdown);
+      status.textContent = "GIF로 만드는 중…";
+      return;
+    }
+    status.textContent =
+      `${size} 녹화하는 중… 남은 시간 ${Math.ceil(left / 1000)}초${most}. ` +
+      "Enter나 [끝]으로 마치고, Esc나 [✕]로 취소합니다.";
+  };
   record.disabled = false;
   showRecording(true);
-  status.textContent = `${size} 녹화하는 중… Enter나 [끝]으로 마치고, Esc나 [✕]로 취소합니다.`;
+  showTimeLeft();
+  countdown = setInterval(showTimeLeft, 200);
 });
 
-listen("gif-encoded", ({ payload: [usedLevel, withinLimit, [width, height], [finalWidth, finalHeight]] }) => {
+listen("gif-encoded", ({ payload: [usedLevel, withinLimit, [width, height], [finalWidth, finalHeight], endedAtLimit] }) => {
   const shrunk = width !== finalWidth || height !== finalHeight;
   const size = shrunk
     ? `크기 ${width}×${height} → ${finalWidth}×${finalHeight}`
@@ -182,6 +212,7 @@ listen("gif-encoded", ({ payload: [usedLevel, withinLimit, [width, height], [fin
     const advice = sizeIsFixed() ? "크기를 줄이거나 더 짧게 녹화하세요." : "더 짧게 녹화하세요.";
     encoded.textContent = `용량 목표보다 큽니다. 조정할 수 있는 끝까지 낮췄습니다: ${made}. ${advice}`;
   }
+  if (endedAtLimit) encoded.textContent += `${encoded.textContent.endsWith(".") ? "" : "."} ${whyItEnded()}`;
 });
 
 listen("gif-saved", ({ payload }) => {
