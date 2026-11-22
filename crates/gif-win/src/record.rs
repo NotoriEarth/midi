@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use gif_core::GifFps;
 use gif_core::resize::downscale;
-use gif_core::schedule::frame_due;
+use gif_core::schedule::{frame_due, slot_at};
 use gif_core::session::ScreenRect;
 use gif_core::writer::Rgb;
 
@@ -15,7 +15,7 @@ pub fn record_screen(
     fps: GifFps,
     max_frames: u32,
     keep_going: impl FnMut() -> bool,
-    keep: impl FnMut(Vec<Rgb>),
+    keep: impl FnMut(Vec<Rgb>, u32),
 ) -> Result<(), CaptureError> {
     let started = Instant::now();
     let sleep_until = |due: Duration| std::thread::sleep((started + due).saturating_duration_since(Instant::now()));
@@ -24,23 +24,31 @@ pub fn record_screen(
         downscale(&pixels, (region.width, region.height), output_size)
             .map_err(|error| CaptureError::System(format!("the frame could not be resized: {error:?}")))
     };
-    record_frames(fps, max_frames, grab, sleep_until, keep_going, keep)
+    let elapsed = || started.elapsed();
+    record_frames(fps, max_frames, Clock { wait_until: sleep_until, elapsed }, grab, keep_going, keep)
+}
+
+struct Clock<Wait, Elapsed> {
+    wait_until: Wait,
+    elapsed: Elapsed,
 }
 
 fn record_frames<Frame, Error>(
     fps: GifFps,
-    max_frames: u32,
+    max_slots: u32,
+    mut clock: Clock<impl FnMut(Duration), impl FnMut() -> Duration>,
     mut grab: impl FnMut() -> Result<Frame, Error>,
-    mut wait_until: impl FnMut(Duration),
     mut keep_going: impl FnMut() -> bool,
-    mut keep: impl FnMut(Frame),
+    mut keep: impl FnMut(Frame, u32),
 ) -> Result<(), Error> {
-    for index in 0..max_frames {
-        wait_until(frame_due(fps, index));
+    let mut slot = 0;
+    while slot < max_slots {
+        (clock.wait_until)(frame_due(fps, slot));
         if !keep_going() {
             break;
         }
-        keep(grab()?);
+        keep(grab()?, slot);
+        slot = (slot + 1).max(slot_at(fps, (clock.elapsed)()));
     }
     Ok(())
 }
@@ -64,7 +72,49 @@ mod tests {
         keep_going: impl FnMut() -> bool,
     ) -> Result<Vec<Frame>, Error> {
         let mut frames = Vec::new();
-        record_frames(fps, max_frames, grab, wait_until, keep_going, |frame| frames.push(frame)).map(|()| frames)
+        let clock = Clock { wait_until, elapsed: || Duration::ZERO };
+        record_frames(fps, max_frames, clock, grab, keep_going, |frame, _| frames.push(frame)).map(|()| frames)
+    }
+
+    struct FakeTime(std::cell::Cell<Duration>);
+
+    impl FakeTime {
+        fn pass(&self, time: Duration) {
+            self.0.set(self.0.get() + time);
+        }
+    }
+
+    fn slots_kept(fps: GifFps, max_slots: u32, grab_takes_ms: &[u64]) -> Vec<(u32, Duration)> {
+        let now = FakeTime(std::cell::Cell::new(Duration::ZERO));
+        let clock = Clock { wait_until: |due: Duration| now.0.set(now.0.get().max(due)), elapsed: || now.0.get() };
+        let mut grabs = grab_takes_ms.iter();
+        let grab = || {
+            let taken_at = now.0.get();
+            now.pass(ms(*grabs.next().expect("no more grabs than planned")));
+            Ok::<Duration, ()>(taken_at)
+        };
+        let mut kept = Vec::new();
+        record_frames(fps, max_slots, clock, grab, || true, |taken_at, slot| kept.push((slot, taken_at))).unwrap();
+        kept
+    }
+
+    #[test]
+    fn frames_taken_on_time_fill_every_slot() {
+        let kept = slots_kept(GifFps::Fps10, 4, &[10, 10, 10, 10]);
+        assert_eq!(kept, [(0, ms(0)), (1, ms(100)), (2, ms(200)), (3, ms(300))]);
+    }
+
+    #[test]
+    fn a_slow_frame_skips_the_slots_it_ran_over_and_the_next_is_taken_at_once() {
+        let kept = slots_kept(GifFps::Fps10, 6, &[10, 250, 10, 10, 10]);
+        assert_eq!(kept, [(0, ms(0)), (1, ms(100)), (3, ms(350)), (4, ms(400)), (5, ms(500))]);
+    }
+
+    #[test]
+    fn a_slow_frame_does_not_make_the_recording_run_past_its_last_slot() {
+        let kept = slots_kept(GifFps::Fps10, 5, &[10, 10, 330, 10]);
+        assert_eq!(kept.iter().map(|&(slot, _)| slot).collect::<Vec<_>>(), [0, 1, 2]);
+        assert!(kept.last().unwrap().1 < frame_due(GifFps::Fps10, 5));
     }
 
     #[test]
@@ -76,7 +126,8 @@ mod tests {
         };
         let mut handed_over = Vec::new();
 
-        let ended = record_frames(GifFps::Fps30, 5, grab, |_| {}, || true, |frame| handed_over.push(frame));
+        let clock = Clock { wait_until: |_| {}, elapsed: || Duration::ZERO };
+        let ended = record_frames(GifFps::Fps30, 5, clock, grab, || true, |frame, _| handed_over.push(frame));
 
         assert_eq!((ended, handed_over), (Err("screen went away"), vec![1, 2]));
     }
@@ -180,7 +231,7 @@ mod tests {
 
         let started = Instant::now();
         let mut frames = Vec::new();
-        record_screen(&mut capturer, region, (32, 24), GifFps::Fps10, 6, || true, |frame| frames.push(frame)).unwrap();
+        record_screen(&mut capturer, region, (32, 24), GifFps::Fps10, 6, || true, |frame, _| frames.push(frame)).unwrap();
         let took = started.elapsed();
 
         assert_eq!(frames.len(), 6);

@@ -9,9 +9,26 @@ pub fn frame_due(fps: GifFps, index: u32) -> Duration {
     Duration::from_nanos(nanoseconds)
 }
 
+pub fn slot_at(fps: GifFps, elapsed: Duration) -> u32 {
+    let nanoseconds = elapsed.as_nanos().min(u128::from(u64::MAX)) as u64;
+    let guess = (u128::from(nanoseconds) * u128::from(fps.per_second()) / u128::from(NANOSECONDS_PER_SECOND)) as u32;
+    if frame_due(fps, guess + 1) <= elapsed { guess + 1 } else { guess }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_moment_falls_in_the_slot_whose_due_time_it_has_reached() {
+        let nanosecond = Duration::from_nanos(1);
+        for fps in GifFps::ALL {
+            for slot in 0..2000 {
+                assert_eq!(slot_at(fps, frame_due(fps, slot)), slot, "{fps:?} at the start of slot {slot}");
+                assert_eq!(slot_at(fps, frame_due(fps, slot + 1) - nanosecond), slot, "{fps:?} at the end of slot {slot}");
+            }
+        }
+    }
 
     #[test]
     fn the_first_frame_is_due_at_once() {

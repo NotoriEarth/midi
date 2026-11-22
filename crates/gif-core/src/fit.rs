@@ -163,6 +163,10 @@ impl FrameSource for Shrunk<'_> {
         self.frames.frame_count()
     }
 
+    fn slot(&self, index: usize) -> usize {
+        self.frames.slot(index)
+    }
+
     fn read_frame(&mut self, index: usize, pixels: &mut Vec<Rgb>) -> Result<(), FrameError> {
         self.frames.read_frame(index, &mut self.full_size)?;
         let expected = (self.from.0 * self.from.1) as usize;

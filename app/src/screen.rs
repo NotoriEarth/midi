@@ -125,8 +125,8 @@ impl Recorder {
 
         let not_written = RefCell::new(None);
         let keep_going = || not_written.borrow().is_none() && *self.phase() == Phase::Recording;
-        let keep = |frame: Vec<Rgb>| {
-            if let Err(problem) = spool.push(&frame) {
+        let keep = |frame: Vec<Rgb>, slot: u32| {
+            if let Err(problem) = spool.push(&frame, slot as usize) {
                 not_written.replace(Some(problem));
             }
         };

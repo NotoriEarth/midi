@@ -32,12 +32,17 @@ pub enum FrameError {
 
 pub trait FrameSource {
     fn frame_count(&self) -> usize;
+    fn slot(&self, index: usize) -> usize;
     fn read_frame(&mut self, index: usize, pixels: &mut Vec<Rgb>) -> Result<(), FrameError>;
 }
 
 impl FrameSource for &[&[Rgb]] {
     fn frame_count(&self) -> usize {
         self.len()
+    }
+
+    fn slot(&self, index: usize) -> usize {
+        index
     }
 
     fn read_frame(&mut self, index: usize, pixels: &mut Vec<Rgb>) -> Result<(), FrameError> {
@@ -126,7 +131,11 @@ pub fn encode_frames(
         read(frames, index, pixel_count, &mut frame)?;
         let indices = ordered_dither(&mut nearest, steady.show(&frame), usize::from(width), settings.dither)
             .expect("every frame is width x height pixels");
-        writer.add_frame(&indices).expect("the indices come from the palette and the frame fits the size");
+        let slot = frames.slot(index);
+        let next_slot = if index + 1 < frame_count { frames.slot(index + 1) } else { slot + 1 };
+        writer
+            .add_frame(&indices, slot..next_slot.max(slot + 1))
+            .expect("the indices come from the palette and the frame fits the size");
         one_more_step();
     }
     Ok(writer.finish().expect("at least one frame was written"))
@@ -174,6 +183,7 @@ mod tests {
 
     struct MadeOnDemand {
         frame_count: usize,
+        slots: Option<Vec<usize>>,
         unreadable: Option<usize>,
         reads: Vec<usize>,
     }
@@ -181,6 +191,10 @@ mod tests {
     impl FrameSource for MadeOnDemand {
         fn frame_count(&self) -> usize {
             self.frame_count
+        }
+
+        fn slot(&self, index: usize) -> usize {
+            self.slots.as_ref().map_or(index, |slots| slots[index])
         }
 
         fn read_frame(&mut self, index: usize, pixels: &mut Vec<Rgb>) -> Result<(), FrameError> {
@@ -199,7 +213,7 @@ mod tests {
         let frames = five_small_frames();
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
         let lossy = ManualSettings { colors: 16, dither: 1.0, tolerance: 8 };
-        let mut on_demand = MadeOnDemand { frame_count: 5, unreadable: None, reads: Vec::new() };
+        let mut on_demand = MadeOnDemand { frame_count: 5, slots: None, unreadable: None, reads: Vec::new() };
 
         let streamed = encode_frames(8, 6, &mut on_demand, GifFps::Fps10, lossy, &mut |_| {});
 
@@ -207,9 +221,35 @@ mod tests {
         assert_eq!(on_demand.reads, [0, 1, 2, 3, 4, 0, 1, 2, 3, 4], "once to choose colors, once to write");
     }
 
+    fn delays_of(gif: &[u8]) -> Vec<u16> {
+        let mut decoder = gif::DecodeOptions::new().read_info(gif).expect("a readable GIF header");
+        let mut delays = Vec::new();
+        while let Some(frame) = decoder.read_next_frame().expect("a readable frame") {
+            delays.push(frame.delay);
+        }
+        delays
+    }
+
+    #[test]
+    fn a_frame_taken_late_is_shown_until_the_next_frame_was_taken() {
+        let mut late = MadeOnDemand { frame_count: 5, slots: Some(vec![0, 1, 4, 5, 6]), unreadable: None, reads: Vec::new() };
+
+        let gif = encode_frames(8, 6, &mut late, GifFps::Fps10, SHARP, &mut |_| {}).unwrap();
+
+        assert_eq!(delays_of(&gif), [10, 30, 10, 10, 10]);
+    }
+
+    #[test]
+    fn frames_taken_on_time_keep_the_steady_delays() {
+        let frames = five_small_frames();
+        let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
+        let gif = encode_gif(8, 6, &slices, GifFps::Fps30, SHARP).unwrap();
+        assert_eq!(delays_of(&gif), [3, 3, 4, 3, 3]);
+    }
+
     #[test]
     fn a_frame_that_cannot_be_read_stops_the_encode_and_names_the_frame() {
-        let mut broken = MadeOnDemand { frame_count: 5, unreadable: Some(3), reads: Vec::new() };
+        let mut broken = MadeOnDemand { frame_count: 5, slots: None, unreadable: Some(3), reads: Vec::new() };
 
         let stopped = encode_frames(8, 6, &mut broken, GifFps::Fps10, SHARP, &mut |_| {});
 

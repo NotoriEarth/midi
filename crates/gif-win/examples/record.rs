@@ -19,7 +19,7 @@ fn main() {
     let mut capturer = ScreenCapturer::open(monitor).expect("the primary monitor can be captured");
     let started = Instant::now();
     let mut frames = Vec::new();
-    let keep = |frame| frames.push(frame);
+    let keep = |frame, _slot| frames.push(frame);
     record_screen(&mut capturer, region, (WIDTH, HEIGHT), FPS, FPS.per_second() * SECONDS, || true, keep)
         .expect("the top-left corner is on the monitor");
     let recorded = started.elapsed();

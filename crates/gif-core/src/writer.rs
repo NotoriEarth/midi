@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::diff::{FramePatch, changed_patch};
 use crate::GifFps;
-use crate::delay::frame_delay;
+use crate::delay::slots_delay;
 
 pub type Rgb = [u8; 3];
 
@@ -26,8 +26,8 @@ pub fn write_gif(
     check_input(pixel_count, palette, frames)?;
 
     let mut writer = GifWriter::new(width, height, palette, fps)?;
-    for frame in frames {
-        writer.add_frame(frame)?;
+    for (index, frame) in frames.iter().enumerate() {
+        writer.add_frame(frame, index..index + 1)?;
     }
     writer.finish()
 }
@@ -71,7 +71,7 @@ impl GifWriter {
         })
     }
 
-    pub fn add_frame(&mut self, indices: &[u8]) -> Result<(), GifWriteError> {
+    pub fn add_frame(&mut self, indices: &[u8], slots: std::ops::Range<usize>) -> Result<(), GifWriteError> {
         let frame = self.frames_written;
         check_frame(frame, indices, self.pixel_count, self.palette_len)?;
 
@@ -81,7 +81,7 @@ impl GifWriter {
         } else {
             changed_patch(&self.last_frame, indices, self.row_width, transparent)
         };
-        write_frame_control(&mut self.out, frame_delay(self.fps, frame), transparent);
+        write_frame_control(&mut self.out, slots_delay(self.fps, slots), transparent);
         write_image_position(&mut self.out, &patch);
         self.out.push(self.min_code_size);
         write_sub_blocks(&mut self.out, &lzw(&patch.pixels, self.min_code_size));
