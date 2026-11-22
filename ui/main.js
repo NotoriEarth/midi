@@ -6,6 +6,7 @@ const fps = document.querySelector("#fps");
 const colors = document.querySelector("#colors");
 const dither = document.querySelector("#dither");
 const scale = document.querySelector("#scale");
+const tolerance = document.querySelector("#tolerance");
 const make = document.querySelector("#make");
 const record = document.querySelector("#record");
 const cancel = document.querySelector("#cancel");
@@ -20,6 +21,7 @@ function showValue(input, output) {
 
 showValue(colors, document.querySelector("#colors-value"));
 showValue(dither, document.querySelector("#dither-value"));
+showValue(tolerance, document.querySelector("#tolerance-value"));
 
 function settings() {
   return { fps: Number(fps.value), colors: Number(colors.value), dither: Number(dither.value) };
@@ -70,7 +72,7 @@ record.addEventListener("click", async () => {
     return;
   }
   record.disabled = true;
-  await showGif("record_screen_gif", { settings: { ...settings(), scale: Number(scale.value) } }, "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.");
+  await showGif("record_screen_gif", { settings: { ...settings(), tolerance: Number(tolerance.value), scale: Number(scale.value) } }, "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.");
   record.disabled = false;
   showRecording(false);
 });

@@ -10,6 +10,7 @@ pub mod resize;
 pub mod schedule;
 pub mod selection;
 pub mod session;
+pub mod stabilize;
 pub mod writer;
 
 pub use delay::frame_delays;

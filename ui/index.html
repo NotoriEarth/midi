@@ -29,6 +29,11 @@
           <input id="dither" type="range" min="0" max="1" step="0.05" value="1" />
         </label>
         <label>
+          열화 정도 <output id="tolerance-value">0</output>
+          <input id="tolerance" type="range" min="0" max="32" value="0" />
+          <small class="hint">녹화에만 적용됩니다. 이 값 이하의 작은 색 변화는 안 바뀐 것으로 보고 용량을 줄입니다.</small>
+        </label>
+        <label>
           녹화 해상도
           <select id="scale">
             <option value="100" selected>100% (그대로)</option>

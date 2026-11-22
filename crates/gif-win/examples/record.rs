@@ -23,9 +23,14 @@ fn main() {
     let recorded = started.elapsed();
 
     let borrowed: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-    let settings = ManualSettings { colors: ManualSettings::MAX_COLORS, dither: 1.0 };
-    let bytes =
-        encode_gif(WIDTH as u16, HEIGHT as u16, &borrowed, FPS, settings).expect("every frame is WIDTH x HEIGHT");
+    let encode = |tolerance| {
+        let settings = ManualSettings { colors: ManualSettings::MAX_COLORS, dither: 1.0, tolerance };
+        encode_gif(WIDTH as u16, HEIGHT as u16, &borrowed, FPS, settings).expect("every frame is WIDTH x HEIGHT")
+    };
+    let bytes = encode(0);
     std::fs::write(&path, &bytes).expect("the output path is writable");
     println!("{} frames in {recorded:?}, saved to {path}: {} bytes", frames.len(), bytes.len());
+    for tolerance in [4, 8, 16] {
+        println!("with tolerance {tolerance}: {} bytes", encode(tolerance).len());
+    }
 }

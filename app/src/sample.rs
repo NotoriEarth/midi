@@ -15,7 +15,7 @@ pub fn encode(fps: u32, colors: usize, dither: f32) -> Result<Vec<u8>, String> {
     let frames: Vec<Vec<Rgb>> = (0..frame_count).map(|number| frame(number, frame_count)).collect();
     let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
 
-    encode_gif(WIDTH as u16, HEIGHT as u16, &frames, fps, ManualSettings { colors, dither }).map_err(explain_encode)
+    encode_gif(WIDTH as u16, HEIGHT as u16, &frames, fps, ManualSettings { colors, dither, tolerance: 0 }).map_err(explain_encode)
 }
 
 pub fn parse_fps(fps: u32) -> Result<GifFps, String> {
@@ -27,6 +27,7 @@ pub fn explain_encode(error: EncodeError) -> String {
     match error {
         EncodeError::Colors(colors) => format!("색 수는 2~255 사이여야 합니다: {colors}"),
         EncodeError::Dither(dither) => format!("디더링 강도는 0~1 사이여야 합니다: {dither}"),
+        EncodeError::Tolerance(tolerance) => format!("열화 정도는 0~32 사이여야 합니다: {tolerance}"),
         EncodeError::NoFrames => "녹화된 프레임이 없습니다. 조금 더 길게 녹화하세요.".to_string(),
         other => format!("GIF를 만들지 못했습니다: {other:?}"),
     }

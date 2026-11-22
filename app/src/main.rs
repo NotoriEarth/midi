@@ -4,6 +4,7 @@ mod sample;
 mod save;
 mod screen;
 
+use gif_core::encode::ManualSettings;
 use gif_core::hotkey::Hotkey;
 use gif_core::session::ScreenRect;
 use std::path::PathBuf;
@@ -88,6 +89,7 @@ struct RecordSettings {
     fps: u32,
     colors: usize,
     dither: f32,
+    tolerance: u8,
     scale: u32,
 }
 
@@ -105,8 +107,8 @@ fn record_screen_gif(
         let _ = hotkeys.register(STOP_KEY, KeyCombo::ENTER);
         let _ = window.emit(RECORDING_STARTED, ((region.width, region.height), output_size));
     };
-    let RecordSettings { fps, colors, dither, scale } = settings;
-    let gif = recorder.record(fps, colors, dither, scale, tell_the_page)?;
+    let RecordSettings { fps, colors, dither, tolerance, scale } = settings;
+    let gif = recorder.record(fps, ManualSettings { colors, dither, tolerance }, scale, tell_the_page)?;
     if let Some(gif) = &gif {
         let saved = save_to_pictures(window.app_handle(), gif);
         let _ = window.emit(GIF_SAVED, saved.as_ref().map(|path| path.display().to_string()));
