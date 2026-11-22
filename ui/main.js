@@ -131,10 +131,6 @@ async function showGif(command, args, busyText) {
 
   try {
     const bytes = await invoke(command, args);
-    if (bytes.byteLength === 0) {
-      status.textContent = "녹화를 취소했습니다.";
-      return;
-    }
     const gif = new Blob([bytes], { type: "image/gif" });
     URL.revokeObjectURL(preview.src);
     preview.src = URL.createObjectURL(gif);
@@ -153,17 +149,42 @@ form.addEventListener("submit", (event) => {
   showGif("make_sample_gif", { fps: Number(fps.value), quality: quality() }, "만드는 중…");
 });
 
-record.addEventListener("click", async () => {
+record.addEventListener("click", () => {
   if (recording) {
     clearInterval(countdown);
     status.textContent = "GIF로 만드는 중…";
     invoke("stop_recording");
     return;
   }
+  invoke("begin_recording", { settings: settings() });
+});
+
+let recordingBegan = 0;
+
+listen("selection-started", () => {
+  recordingBegan = performance.now();
   record.disabled = true;
-  await showGif("record_screen_gif", { settings: settings() }, "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.");
+  make.disabled = true;
+  encoded.hidden = true;
+  status.textContent = "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.";
+});
+
+listen("recording-finished", async ({ payload }) => {
+  clearInterval(countdown);
   record.disabled = false;
   showRecording(false);
+  if (payload === "cancelled") {
+    status.textContent = "녹화를 취소했습니다.";
+  } else if ("failed" in payload) {
+    status.textContent = `실패: ${payload.failed.problem}`;
+  } else {
+    const gif = new Blob([await invoke("last_gif")], { type: "image/gif" });
+    URL.revokeObjectURL(preview.src);
+    preview.src = URL.createObjectURL(gif);
+    preview.hidden = false;
+    const elapsed = Math.round(performance.now() - recordingBegan);
+    status.textContent = `${gif.size.toLocaleString()}바이트, ${elapsed}ms`;
+  }
 });
 
 cancel.addEventListener("click", () => invoke("cancel_recording"));
@@ -225,10 +246,6 @@ listen("gif-saved", ({ payload }) => {
   saved.hidden = false;
   showSaved.hidden = !("Ok" in payload);
   savedPath.textContent = "Ok" in payload ? `저장: ${payload.Ok}` : `저장 실패: ${payload.Err}`;
-});
-
-listen("begin-selection", () => {
-  if (!recording && !record.disabled) record.click();
 });
 
 const ditherValue = document.querySelector("#dither-value");

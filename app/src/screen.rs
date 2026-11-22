@@ -11,6 +11,7 @@ use gif_win::{CaptureError, ScreenCapturer, Spool, free_disk_bytes, record_scree
 use crate::sample::{explain_encode, parse_fps};
 
 const PRIMARY: MonitorId = MonitorId(0);
+pub const ALREADY_RECORDING: &str = "이미 녹화하고 있습니다.";
 const MAX_SECONDS: u32 = 30;
 const DISK_SPACE_LEFT_FREE: u64 = 1 << 30;
 
@@ -98,12 +99,12 @@ impl Recorder {
         }
     }
 
-    pub fn stop(&self) {
-        self.ask(Phase::StopAsked);
+    pub fn stop(&self) -> bool {
+        self.ask(Phase::StopAsked)
     }
 
     pub fn cancel(&self) {
-        self.ask(Phase::CancelAsked);
+        let _ = self.ask(Phase::CancelAsked);
     }
 
     fn record_region(
@@ -152,7 +153,7 @@ impl Recorder {
     fn begin(&self) -> Result<BackToIdle<'_>, String> {
         let mut phase = self.phase();
         if *phase != Phase::Idle {
-            return Err("이미 녹화하고 있습니다.".to_string());
+            return Err(ALREADY_RECORDING.to_string());
         }
         *phase = Phase::Selecting;
         Ok(BackToIdle(self))
@@ -167,12 +168,14 @@ impl Recorder {
         nobody_cancelled
     }
 
-    fn ask(&self, asked: Phase) {
+    fn ask(&self, asked: Phase) -> bool {
         let mut phase = self.phase();
         let cancel_before_recording = asked == Phase::CancelAsked && *phase == Phase::Selecting;
-        if *phase == Phase::Recording || cancel_before_recording {
+        let heard = *phase == Phase::Recording || cancel_before_recording;
+        if heard {
             *phase = asked;
         }
+        heard
     }
 
     fn encode_unless_cancelled(&self) -> Option<Ending> {
@@ -311,11 +314,20 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_says_whether_a_recording_heard_it() {
+        let recorder = Recorder::default();
+        assert!(!recorder.stop(), "nothing to stop");
+        *recorder.phase() = Phase::Recording;
+        assert!(recorder.stop());
+        assert!(!recorder.stop(), "already asked");
+    }
+
+    #[test]
     fn a_stop_before_recording_begins_is_ignored() {
         let recorder = Recorder::default();
         let _session = recorder.begin().unwrap();
 
-        recorder.stop();
+        assert!(!recorder.stop());
 
         assert_eq!(*recorder.phase(), Phase::Selecting);
         assert!(recorder.start_recording());
@@ -348,7 +360,7 @@ mod tests {
     fn a_second_recording_is_refused_while_one_is_running() {
         let recorder = Recorder::default();
         let _session = recorder.begin().unwrap();
-        assert_eq!(recorder.record(15, SETTINGS, ORIGINAL, |_| {}), Err("이미 녹화하고 있습니다.".to_string()));
+        assert_eq!(recorder.record(15, SETTINGS, ORIGINAL, |_| {}), Err(ALREADY_RECORDING.to_string()));
         assert_eq!(*recorder.phase(), Phase::Selecting);
     }
 
@@ -440,7 +452,7 @@ mod tests {
         let mut told = Vec::new();
         let started = Instant::now();
         let gif = thread::scope(|scope| {
-            scope.spawn(once_recording(&recorder, Duration::from_millis(600), || recorder.stop()));
+            scope.spawn(once_recording(&recorder, Duration::from_millis(600), || assert!(recorder.stop())));
             recorder.record_region(SMALL, (80, 45), GifFps::Fps10, LONG, SETTINGS, &mut |event| told.push(event))
         });
         let took = started.elapsed();

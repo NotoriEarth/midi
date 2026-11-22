@@ -18,7 +18,7 @@ pub struct RecordSettings {
 
 impl Default for RecordSettings {
     fn default() -> Self {
-        Self { fps: 30, quality: QualityChoice::default(), fit_within: None }
+        Self { fps: 15, quality: QualityChoice::default(), fit_within: None }
     }
 }
 
@@ -93,7 +93,7 @@ mod tests {
         let settings = load(&file_in(&empty_folder("first-run")));
 
         assert_eq!(settings, RecordSettings::default());
-        assert_eq!(settings.fps, 30);
+        assert_eq!(settings.fps, 15);
         assert_eq!(settings.fit_within, None);
         assert_eq!(settings.quality, QualityChoice { level: None, max_bytes: None, dither: 1.0 });
     }
