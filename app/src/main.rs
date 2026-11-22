@@ -22,7 +22,7 @@ use tauri_plugin_notification::NotificationExt;
 
 use choice::QualityChoice;
 use screen::{ALREADY_RECORDING, PRIMARY, Pick, Recorded, Recorder, RecordingEvent};
-use settings::{RecordSettings, Selection};
+use settings::{RecordControl, RecordSettings, Selection};
 use tray::{TrayAction, TrayState};
 
 #[tauri::command]
@@ -148,8 +148,9 @@ fn region_file(app: &AppHandle) -> Option<PathBuf> {
     app.path().app_config_dir().ok().map(|folder| folder.join(REGION_FILE))
 }
 
-fn pick_for(app: &AppHandle, selection: Selection) -> Pick {
-    match selection {
+fn pick_for(app: &AppHandle, settings: RecordSettings) -> Pick {
+    match settings.selection {
+        Selection::Drag if settings.record_control == RecordControl::Button => Pick::DragThenFrame,
         Selection::Drag => Pick::Drag,
         Selection::Frame => {
             let last = region_file(app).and_then(|file| settings::load_region(&file));
@@ -289,8 +290,13 @@ fn record_and_save(app: &AppHandle, settings: RecordSettings) -> Result<Option<V
             }
         }
     };
-    let pick = pick_for(app, settings.selection);
-    let _ = app.emit(SELECTION_STARTED, matches!(pick, Pick::Frame(_)));
+    let pick = pick_for(app, settings);
+    let how = match pick {
+        Pick::Drag => "drag",
+        Pick::DragThenFrame => "dragThenFrame",
+        Pick::Frame(_) => "frame",
+    };
+    let _ = app.emit(SELECTION_STARTED, how);
     let recorded = recorder.record(settings.fps, encode_settings, settings.output_size(), pick, tell_the_page)?;
     let Some(Recorded { encoded, ended_at_limit, every_frame_black }) = recorded else {
         return Ok(None);

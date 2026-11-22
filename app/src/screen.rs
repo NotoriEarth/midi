@@ -20,6 +20,7 @@ pub const PRIMARY: MonitorId = MonitorId(0);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
     Drag,
+    DragThenFrame,
     Frame(ScreenRect),
 }
 pub const ALREADY_RECORDING: &str = "이미 녹화하고 있습니다.";
@@ -104,6 +105,11 @@ impl Recorder {
         let _back_to_idle = self.begin()?;
         let picked = match pick {
             Pick::Drag => select_region(PRIMARY),
+            Pick::DragThenFrame => match select_region(PRIMARY) {
+                Ok(Some(dragged)) if !self.cancel_was_asked() => adjust_frame(dragged),
+                Ok(_) => Ok(None),
+                Err(problem) => Err(problem),
+            },
             Pick::Frame(start) => adjust_frame(start),
         };
         match picked.map_err(explain_capture)? {
@@ -191,6 +197,10 @@ impl Recorder {
         }
         *phase = Phase::Selecting;
         Ok(BackToIdle(self))
+    }
+
+    fn cancel_was_asked(&self) -> bool {
+        *self.phase() == Phase::CancelAsked
     }
 
     fn start_recording(&self) -> bool {
@@ -377,6 +387,17 @@ mod tests {
 
         assert!(!recorder.start_recording());
         assert_ne!(*recorder.phase(), Phase::Recording);
+    }
+
+    #[test]
+    fn a_cancel_while_selecting_is_remembered_until_recording_would_begin() {
+        let recorder = Recorder::default();
+        let _session = recorder.begin().unwrap();
+        assert!(!recorder.cancel_was_asked());
+
+        recorder.cancel();
+
+        assert!(recorder.cancel_was_asked());
     }
 
     #[test]

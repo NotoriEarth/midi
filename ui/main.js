@@ -4,6 +4,8 @@ const { listen } = window.__TAURI__.event;
 const form = document.querySelector("#settings");
 const fps = document.querySelector("#fps");
 const selection = document.querySelector("#selection");
+const recordControl = document.querySelector("#record-control");
+const recordControlHint = document.querySelector("#record-control-hint");
 const dither = document.querySelector("#dither");
 const sizeMode = document.querySelector("#size-mode");
 const sizeBox = document.querySelector("#size-box");
@@ -65,6 +67,9 @@ function howTheLimitIsMet() {
 }
 
 function showChoices() {
+  const withFrame = selection.value === "frame";
+  recordControl.disabled = withFrame;
+  recordControlHint.hidden = !withFrame;
   const nothingToAdjust = sizeIsFixed() && levelIsFixed();
   sizeBox.hidden = !sizeIsFixed();
   maxSize.disabled = nothingToAdjust;
@@ -91,7 +96,7 @@ function fitWithin() {
 }
 
 function settings() {
-  return { fps: Number(fps.value), quality: quality(), fitWithin: fitWithin(), selection: selection.value };
+  return { fps: Number(fps.value), quality: quality(), fitWithin: fitWithin(), selection: selection.value, recordControl: recordControl.value };
 }
 
 function showLimit(bytes) {
@@ -108,6 +113,7 @@ function showLimit(bytes) {
 function showSettings(saved) {
   fps.value = String(saved.fps);
   selection.value = saved.selection;
+  recordControl.value = saved.recordControl;
   sizeMode.value = saved.fitWithin ? "fit" : "original";
   if (saved.fitWithin) [sizeWidth.value, sizeHeight.value] = saved.fitWithin;
   level.value = saved.quality.level === null ? "" : String(saved.quality.level);
@@ -163,14 +169,20 @@ record.addEventListener("click", () => {
 
 let recordingBegan = 0;
 
-listen("selection-started", ({ payload: withFrame }) => {
+const ADJUST_THE_FRAME =
+  "녹화 틀의 가장자리를 끌어 크기를, 아래 막대를 끌어 위치를 맞추고 [● 시작]이나 Enter를 누르세요. " +
+  "화살표로 1px씩 옮기고(Ctrl은 10px), Shift+화살표로 크기를 바꿉니다. Esc로 취소합니다.";
+
+listen("selection-started", ({ payload: how }) => {
   recordingBegan = performance.now();
   record.disabled = true;
   make.disabled = true;
   encoded.hidden = true;
-  status.textContent = withFrame
-    ? "녹화 틀의 가장자리를 끌어 크기를, 아래 막대를 끌어 위치를 맞추고 [● 시작]이나 Enter를 누르세요. 화살표로 1px씩 옮기고(Ctrl은 10px), Shift+화살표로 크기를 바꿉니다. Esc로 취소합니다."
-    : "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.";
+  status.textContent = {
+    drag: "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.",
+    dragThenFrame: `녹화할 영역을 드래그하세요. 드래그한 뒤에는 ${ADJUST_THE_FRAME}`,
+    frame: ADJUST_THE_FRAME,
+  }[how];
 });
 
 listen("recording-finished", async ({ payload }) => {
@@ -259,7 +271,7 @@ listen("gif-saved", ({ payload }) => {
 
 const ditherValue = document.querySelector("#dither-value");
 dither.addEventListener("input", () => (ditherValue.textContent = dither.value));
-for (const choice of [sizeMode, level, maxSize]) choice.addEventListener("change", showChoices);
+for (const choice of [sizeMode, level, maxSize, selection]) choice.addEventListener("change", showChoices);
 form.addEventListener("change", () => {
   invoke("remember_settings", { settings: settings() }).catch((problem) => (status.textContent = problem));
 });

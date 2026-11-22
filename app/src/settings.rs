@@ -16,6 +16,15 @@ pub struct RecordSettings {
     pub quality: QualityChoice,
     pub fit_within: Option<(u32, u32)>,
     pub selection: Selection,
+    pub record_control: RecordControl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RecordControl {
+    #[default]
+    Immediate,
+    Button,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -28,7 +37,13 @@ pub enum Selection {
 
 impl Default for RecordSettings {
     fn default() -> Self {
-        Self { fps: 15, quality: QualityChoice::default(), fit_within: None, selection: Selection::Drag }
+        Self {
+            fps: 15,
+            quality: QualityChoice::default(),
+            fit_within: None,
+            selection: Selection::Drag,
+            record_control: RecordControl::Immediate,
+        }
     }
 }
 
@@ -113,6 +128,7 @@ mod tests {
             quality: QualityChoice { level: Some(3), max_bytes: Some(2 * 1024 * 1024), dither: 0.35 },
             fit_within: None,
             selection: Selection::Drag,
+            record_control: RecordControl::Immediate,
         }
     }
 
@@ -180,6 +196,7 @@ mod tests {
             quality: QualityChoice { level: Some(4), max_bytes: None, dither: 1.0 },
             fit_within: None,
             selection: Selection::Drag,
+            record_control: RecordControl::Immediate,
         };
         assert_eq!(settings, expected);
     }
@@ -235,5 +252,17 @@ mod tests {
         assert_eq!(load_region(&folder.join("region.json")), None);
         fs::write(folder.join("region.json"), "[1, 2]").unwrap();
         assert_eq!(load_region(&folder.join("region.json")), None);
+    }
+
+    #[test]
+    fn the_start_button_choice_comes_back_and_an_older_file_means_start_at_once() {
+        let file = file_in(&empty_folder("record-control"));
+        let with_button = RecordSettings { record_control: RecordControl::Button, ..chosen() };
+
+        store(&file, with_button).unwrap();
+
+        assert_eq!(load(&file).record_control, RecordControl::Button);
+        assert_eq!(loaded_from("no-record-control", r#"{"fps": 10}"#).record_control, RecordControl::Immediate);
+        assert_eq!(RecordSettings::default().record_control, RecordControl::Immediate);
     }
 }

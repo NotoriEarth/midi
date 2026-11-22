@@ -29,6 +29,15 @@
           </select>
         </label>
 
+        <label>
+          녹화 시작
+          <select id="record-control">
+            <option value="immediate">드래그를 마치면 바로</option>
+            <option value="button">드래그한 뒤 틀로 다듬고 [● 시작]을 눌러서</option>
+          </select>
+          <small id="record-control-hint" class="hint" hidden>녹화 틀은 항상 [● 시작]으로 시작합니다.</small>
+        </label>
+
         <fieldset>
           <legend>크기</legend>
           <select id="size-mode" aria-label="크기 정하는 방법">
