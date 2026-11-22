@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
-use windows::Win32::Foundation::HMODULE;
+use windows::Win32::Foundation::{HMODULE, RECT};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
@@ -123,7 +123,7 @@ impl ScreenCapturer {
     }
 }
 
-fn system(error: windows::core::Error) -> CaptureError {
+pub(crate) fn system(error: windows::core::Error) -> CaptureError {
     CaptureError::System(error.to_string())
 }
 
@@ -133,6 +133,12 @@ fn ends_the_list<T>(result: windows::core::Result<T>) -> Result<Option<T>, Captu
         Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => Ok(None),
         Err(error) => Err(system(error)),
     }
+}
+
+pub(crate) fn monitor_bounds(monitor: MonitorId) -> Result<RECT, CaptureError> {
+    let (_adapter, output) = find_monitor(monitor)?;
+    let description = unsafe { output.GetDesc() }.map_err(system)?;
+    Ok(description.DesktopCoordinates)
 }
 
 fn find_monitor(monitor: MonitorId) -> Result<(IDXGIAdapter1, IDXGIOutput), CaptureError> {

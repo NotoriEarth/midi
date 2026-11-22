@@ -1,10 +1,12 @@
 #![cfg(windows)]
 
 mod capture;
+mod overlay;
 mod pixels;
 mod record;
 
 pub use capture::ScreenCapturer;
+pub use overlay::select_region;
 pub use record::record_screen;
 
 use gif_core::session::MonitorId;
@@ -30,7 +32,7 @@ mod desktop {
 
     pub const PRIMARY: MonitorId = MonitorId(0);
 
-    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    pub static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
     pub fn open_primary() -> (MutexGuard<'static, ()>, ScreenCapturer) {
         let alone = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);

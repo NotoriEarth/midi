@@ -1,4 +1,5 @@
 const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
 
 const form = document.querySelector("#settings");
 const fps = document.querySelector("#fps");
@@ -67,9 +68,16 @@ record.addEventListener("click", async () => {
     invoke("stop_recording");
     return;
   }
-  showRecording(true);
-  await showGif("record_screen_gif", settings(), "녹화하는 중… [끝]을 누르면 GIF로 만듭니다 (최대 30초)");
+  record.disabled = true;
+  await showGif("record_screen_gif", settings(), "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.");
+  record.disabled = false;
   showRecording(false);
+});
+
+listen("recording-started", ({ payload: [width, height] }) => {
+  record.disabled = false;
+  showRecording(true);
+  status.textContent = `${width}×${height} 녹화하는 중… [끝]을 누르면 GIF로 만듭니다.`;
 });
 
 cancel.addEventListener("click", () => invoke("cancel_recording"));

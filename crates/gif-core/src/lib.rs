@@ -6,6 +6,7 @@ pub mod fps;
 pub mod hotkey;
 pub mod palette;
 pub mod schedule;
+pub mod selection;
 pub mod session;
 pub mod writer;
 

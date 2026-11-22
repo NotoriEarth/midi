@@ -3,8 +3,9 @@
 mod sample;
 mod screen;
 
-use tauri::State;
+use gif_core::session::ScreenRect;
 use tauri::ipc::Response;
+use tauri::{Emitter, State, WebviewWindow};
 
 use screen::Recorder;
 
@@ -14,10 +15,20 @@ fn make_sample_gif(fps: u32, colors: usize, dither: f32) -> Result<Response, Str
 }
 
 const CANCELLED: Vec<u8> = Vec::new();
+const RECORDING_STARTED: &str = "recording-started";
 
 #[tauri::command(async)]
-fn record_screen_gif(recorder: State<Recorder>, fps: u32, colors: usize, dither: f32) -> Result<Response, String> {
-    let gif = recorder.record(fps, colors, dither)?;
+fn record_screen_gif(
+    window: WebviewWindow,
+    recorder: State<Recorder>,
+    fps: u32,
+    colors: usize,
+    dither: f32,
+) -> Result<Response, String> {
+    let tell_the_page = |region: ScreenRect| {
+        let _ = window.emit(RECORDING_STARTED, (region.width, region.height));
+    };
+    let gif = recorder.record(fps, colors, dither, tell_the_page)?;
     Ok(Response::new(gif.unwrap_or(CANCELLED)))
 }
 
