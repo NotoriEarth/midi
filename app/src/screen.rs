@@ -117,7 +117,9 @@ impl Recorder {
     ) -> Result<Option<Recorded>, String> {
         let mut capturer = ScreenCapturer::open(region.monitor).map_err(explain_capture)?;
         let mut spool = Spool::create_in(&std::env::temp_dir(), output_size).map_err(explain_spool)?;
-        *self.phase() = Phase::Recording;
+        if !self.start_recording() {
+            return Ok(None);
+        }
         let started = Started { region, output_size, limit_ms: limit.milliseconds(fps), limited_by: limit.by };
         on_event(RecordingEvent::Started(started));
 
@@ -156,9 +158,19 @@ impl Recorder {
         Ok(BackToIdle(self))
     }
 
+    fn start_recording(&self) -> bool {
+        let mut phase = self.phase();
+        let nobody_cancelled = *phase == Phase::Selecting;
+        if nobody_cancelled {
+            *phase = Phase::Recording;
+        }
+        nobody_cancelled
+    }
+
     fn ask(&self, asked: Phase) {
         let mut phase = self.phase();
-        if *phase == Phase::Recording {
+        let cancel_before_recording = asked == Phase::CancelAsked && *phase == Phase::Selecting;
+        if *phase == Phase::Recording || cancel_before_recording {
             *phase = asked;
         }
     }
@@ -291,16 +303,45 @@ mod tests {
     }
 
     #[test]
-    fn stop_and_cancel_do_nothing_unless_recording() {
+    fn stop_and_cancel_do_nothing_when_no_session_is_running() {
         let recorder = Recorder::default();
         recorder.stop();
         recorder.cancel();
         assert_eq!(*recorder.phase(), Phase::Idle);
+    }
 
+    #[test]
+    fn a_stop_before_recording_begins_is_ignored() {
+        let recorder = Recorder::default();
         let _session = recorder.begin().unwrap();
+
         recorder.stop();
-        recorder.cancel();
+
         assert_eq!(*recorder.phase(), Phase::Selecting);
+        assert!(recorder.start_recording());
+        assert_eq!(*recorder.phase(), Phase::Recording);
+    }
+
+    #[test]
+    fn a_cancel_before_recording_begins_keeps_it_from_beginning() {
+        let recorder = Recorder::default();
+        let _session = recorder.begin().unwrap();
+
+        recorder.cancel();
+
+        assert!(!recorder.start_recording());
+        assert_ne!(*recorder.phase(), Phase::Recording);
+    }
+
+    #[test]
+    fn the_recorder_is_idle_again_after_a_session_cancelled_before_it_began() {
+        let recorder = Recorder::default();
+        let session = recorder.begin().unwrap();
+        recorder.cancel();
+        drop(session);
+
+        assert_eq!(*recorder.phase(), Phase::Idle);
+        assert!(recorder.begin().is_ok());
     }
 
     #[test]
@@ -431,6 +472,22 @@ mod tests {
             recorder.record_region(SMALL, (160, 90), GifFps::Fps10, LONG, SETTINGS, &mut |_| {})
         });
         assert_eq!(gif, Ok(None));
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn a_cancel_while_the_screen_is_being_opened_records_nothing() {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+        let recorder = Recorder::default();
+        let _session = recorder.begin().unwrap();
+        recorder.cancel();
+        let mut told = Vec::new();
+        let started = Instant::now();
+
+        let gif = recorder.record_region(SMALL, (160, 90), GifFps::Fps10, LONG, SETTINGS, &mut |event| told.push(event));
+
+        assert_eq!((gif, told), (Ok(None), vec![]));
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
     }
 
     #[test]
