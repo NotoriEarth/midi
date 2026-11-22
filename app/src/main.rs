@@ -15,14 +15,14 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use gif_win::{HotkeyTaken, Hotkeys, KeyCombo, cancel_selection, local_time};
+use gif_win::{HotkeyTaken, Hotkeys, KeyCombo, cancel_selection, local_time, monitor_size};
 use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
 
 use choice::QualityChoice;
-use screen::{ALREADY_RECORDING, Recorded, Recorder, RecordingEvent};
-use settings::RecordSettings;
+use screen::{ALREADY_RECORDING, PRIMARY, Pick, Recorded, Recorder, RecordingEvent};
+use settings::{RecordSettings, Selection};
 use tray::{TrayAction, TrayState};
 
 #[tauri::command]
@@ -142,6 +142,24 @@ impl Drop for TrayBackToIdle<'_> {
 }
 
 const SETTINGS_FILE: &str = "settings.json";
+const REGION_FILE: &str = "region.json";
+
+fn region_file(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|folder| folder.join(REGION_FILE))
+}
+
+fn pick_for(app: &AppHandle, selection: Selection) -> Pick {
+    match selection {
+        Selection::Drag => Pick::Drag,
+        Selection::Frame => {
+            let last = region_file(app).and_then(|file| settings::load_region(&file));
+            match monitor_size(PRIMARY) {
+                Ok(size) => Pick::Frame(gif_core::selection::frame_start(last, PRIMARY, size)),
+                Err(_) => Pick::Drag,
+            }
+        }
+    }
+}
 
 fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
     let folder = app.path().app_config_dir().map_err(|error| format!("설정 폴더를 찾지 못했습니다: {error}"))?;
@@ -253,6 +271,9 @@ fn record_and_save(app: &AppHandle, settings: RecordSettings) -> Result<Option<V
     let percent_shown = Cell::new(None);
     let tell_the_page = |event| match event {
         RecordingEvent::Started(started) => {
+            if let Some(file) = region_file(app) {
+                let _ = settings::store_region(&file, started.region);
+            }
             recorded_size.set(started.output_size);
             let _ = hotkeys.register(STOP_KEY, KeyCombo::ENTER);
             let region = (started.region.width, started.region.height);
@@ -268,8 +289,9 @@ fn record_and_save(app: &AppHandle, settings: RecordSettings) -> Result<Option<V
             }
         }
     };
-    let _ = app.emit(SELECTION_STARTED, ());
-    let recorded = recorder.record(settings.fps, encode_settings, settings.output_size(), tell_the_page)?;
+    let pick = pick_for(app, settings.selection);
+    let _ = app.emit(SELECTION_STARTED, matches!(pick, Pick::Frame(_)));
+    let recorded = recorder.record(settings.fps, encode_settings, settings.output_size(), pick, tell_the_page)?;
     let Some(Recorded { encoded, ended_at_limit, every_frame_black }) = recorded else {
         return Ok(None);
     };

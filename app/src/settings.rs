@@ -4,6 +4,7 @@ use std::path::Path;
 
 use gif_core::fit::EncodeSettings;
 use gif_core::resize::OutputSize;
+use gif_core::session::{MonitorId, ScreenRect};
 
 use crate::choice::QualityChoice;
 use crate::sample::parse_fps;
@@ -14,12 +15,50 @@ pub struct RecordSettings {
     pub fps: u32,
     pub quality: QualityChoice,
     pub fit_within: Option<(u32, u32)>,
+    pub selection: Selection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Selection {
+    #[default]
+    Drag,
+    Frame,
 }
 
 impl Default for RecordSettings {
     fn default() -> Self {
-        Self { fps: 15, quality: QualityChoice::default(), fit_within: None }
+        Self { fps: 15, quality: QualityChoice::default(), fit_within: None, selection: Selection::Drag }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct StoredRegion {
+    monitor: u32,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+pub fn load_region(file: &Path) -> Option<ScreenRect> {
+    let text = fs::read_to_string(file).ok()?;
+    let StoredRegion { monitor, x, y, width, height } = serde_json::from_str(&text).ok()?;
+    Some(ScreenRect { monitor: MonitorId(monitor), x, y, width, height })
+}
+
+pub fn store_region(file: &Path, region: ScreenRect) -> io::Result<()> {
+    let ScreenRect { monitor: MonitorId(monitor), x, y, width, height } = region;
+    write_replacing(file, &serde_json::to_string(&StoredRegion { monitor, x, y, width, height })?)
+}
+
+fn write_replacing(file: &Path, text: &str) -> io::Result<()> {
+    if let Some(folder) = file.parent() {
+        fs::create_dir_all(folder)?;
+    }
+    let unfinished = file.with_extension("json.part");
+    fs::write(&unfinished, text)?;
+    fs::rename(&unfinished, file)
 }
 
 impl RecordSettings {
@@ -50,12 +89,7 @@ pub fn load(file: &Path) -> RecordSettings {
 }
 
 pub fn store(file: &Path, settings: RecordSettings) -> io::Result<()> {
-    if let Some(folder) = file.parent() {
-        fs::create_dir_all(folder)?;
-    }
-    let unfinished = file.with_extension("json.part");
-    fs::write(&unfinished, serde_json::to_string_pretty(&settings)?)?;
-    fs::rename(&unfinished, file)
+    write_replacing(file, &serde_json::to_string_pretty(&settings)?)
 }
 
 #[cfg(test)]
@@ -78,6 +112,7 @@ mod tests {
             fps: 15,
             quality: QualityChoice { level: Some(3), max_bytes: Some(2 * 1024 * 1024), dither: 0.35 },
             fit_within: None,
+            selection: Selection::Drag,
         }
     }
 
@@ -144,6 +179,7 @@ mod tests {
             fps: 10,
             quality: QualityChoice { level: Some(4), max_bytes: None, dither: 1.0 },
             fit_within: None,
+            selection: Selection::Drag,
         };
         assert_eq!(settings, expected);
     }
@@ -168,5 +204,36 @@ mod tests {
         assert!(chosen().can_record());
         assert!(!RecordSettings { fps: 20, ..chosen() }.can_record());
         assert!(!RecordSettings { fit_within: Some((480, 0)), ..chosen() }.can_record());
+    }
+
+    #[test]
+    fn the_frame_selection_comes_back_and_an_older_file_means_drag() {
+        let file = file_in(&empty_folder("selection"));
+        let framed = RecordSettings { selection: Selection::Frame, ..chosen() };
+
+        store(&file, framed).unwrap();
+
+        assert_eq!(load(&file).selection, Selection::Frame);
+        assert_eq!(loaded_from("no-selection", r#"{"fps": 10}"#).selection, Selection::Drag);
+    }
+
+    const RECORDED: ScreenRect = ScreenRect { monitor: MonitorId(0), x: 120, y: 80, width: 640, height: 360 };
+
+    #[test]
+    fn the_last_region_comes_back() {
+        let file = empty_folder("region").join("region.json");
+
+        store_region(&file, RECORDED).unwrap();
+
+        assert_eq!(load_region(&file), Some(RECORDED));
+    }
+
+    #[test]
+    fn without_a_readable_region_file_there_is_no_last_region() {
+        let folder = empty_folder("no-region");
+        fs::create_dir_all(&folder).unwrap();
+        assert_eq!(load_region(&folder.join("region.json")), None);
+        fs::write(folder.join("region.json"), "[1, 2]").unwrap();
+        assert_eq!(load_region(&folder.join("region.json")), None);
     }
 }

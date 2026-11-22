@@ -3,6 +3,7 @@ const { listen } = window.__TAURI__.event;
 
 const form = document.querySelector("#settings");
 const fps = document.querySelector("#fps");
+const selection = document.querySelector("#selection");
 const dither = document.querySelector("#dither");
 const sizeMode = document.querySelector("#size-mode");
 const sizeBox = document.querySelector("#size-box");
@@ -90,7 +91,7 @@ function fitWithin() {
 }
 
 function settings() {
-  return { fps: Number(fps.value), quality: quality(), fitWithin: fitWithin() };
+  return { fps: Number(fps.value), quality: quality(), fitWithin: fitWithin(), selection: selection.value };
 }
 
 function showLimit(bytes) {
@@ -106,6 +107,7 @@ function showLimit(bytes) {
 
 function showSettings(saved) {
   fps.value = String(saved.fps);
+  selection.value = saved.selection;
   sizeMode.value = saved.fitWithin ? "fit" : "original";
   if (saved.fitWithin) [sizeWidth.value, sizeHeight.value] = saved.fitWithin;
   level.value = saved.quality.level === null ? "" : String(saved.quality.level);
@@ -161,12 +163,14 @@ record.addEventListener("click", () => {
 
 let recordingBegan = 0;
 
-listen("selection-started", () => {
+listen("selection-started", ({ payload: withFrame }) => {
   recordingBegan = performance.now();
   record.disabled = true;
   make.disabled = true;
   encoded.hidden = true;
-  status.textContent = "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.";
+  status.textContent = withFrame
+    ? "녹화 틀의 가장자리를 끌어 크기를, 아래 막대를 끌어 위치를 맞추고 [● 시작]이나 Enter를 누르세요. 화살표로 1px씩 옮기고(Ctrl은 10px), Shift+화살표로 크기를 바꿉니다. Esc로 취소합니다."
+    : "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.";
 });
 
 listen("recording-finished", async ({ payload }) => {

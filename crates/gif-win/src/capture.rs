@@ -135,6 +135,11 @@ fn ends_the_list<T>(result: windows::core::Result<T>) -> Result<Option<T>, Captu
     }
 }
 
+pub fn monitor_size(monitor: MonitorId) -> Result<(u32, u32), CaptureError> {
+    let bounds = monitor_bounds(monitor)?;
+    Ok(((bounds.right - bounds.left) as u32, (bounds.bottom - bounds.top) as u32))
+}
+
 pub(crate) fn monitor_bounds(monitor: MonitorId) -> Result<RECT, CaptureError> {
     let (_adapter, output) = find_monitor(monitor)?;
     let description = unsafe { output.GetDesc() }.map_err(system)?;

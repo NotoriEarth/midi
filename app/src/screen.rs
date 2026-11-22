@@ -9,13 +9,19 @@ use gif_core::resize::{OutputSize, ResizeError};
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
 use gif_win::{
-    CaptureError, PanelButton, RecordingBorder, RecordingPanel, ScreenCapturer, Spool, free_disk_bytes, record_screen,
-    select_region,
+    CaptureError, PanelButton, RecordingBorder, RecordingPanel, ScreenCapturer, Spool, adjust_frame, free_disk_bytes,
+    record_screen, select_region,
 };
 
 use crate::sample::{explain_encode, parse_fps};
 
-const PRIMARY: MonitorId = MonitorId(0);
+pub const PRIMARY: MonitorId = MonitorId(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    Drag,
+    Frame(ScreenRect),
+}
 pub const ALREADY_RECORDING: &str = "이미 녹화하고 있습니다.";
 const MAX_SECONDS: u32 = 30;
 const DISK_SPACE_LEFT_FREE: u64 = 1 << 30;
@@ -88,6 +94,7 @@ impl Recorder {
         fps: u32,
         settings: EncodeSettings,
         size: OutputSize,
+        pick: Pick,
         mut on_event: impl FnMut(RecordingEvent),
     ) -> Result<Option<Recorded>, String> {
         let fps = parse_fps(fps)?;
@@ -95,7 +102,11 @@ impl Recorder {
         size.check().map_err(explain_resize)?;
 
         let _back_to_idle = self.begin()?;
-        match select_region(PRIMARY).map_err(explain_capture)? {
+        let picked = match pick {
+            Pick::Drag => select_region(PRIMARY),
+            Pick::Frame(start) => adjust_frame(start),
+        };
+        match picked.map_err(explain_capture)? {
             Some(region) => {
                 let output_size = size.for_source(region.width, region.height).map_err(explain_resize)?;
                 let limit = recording_limit(fps, output_size, free_disk_bytes(&std::env::temp_dir()))?;
@@ -310,19 +321,19 @@ mod tests {
     fn bad_settings_are_explained_before_anything_is_selected() {
         let recorder = Recorder::default();
         assert_eq!(
-            recorder.record(60, SETTINGS, ORIGINAL, |_| {}),
+            recorder.record(60, SETTINGS, ORIGINAL, Pick::Drag, |_| {}),
             Err("지원하지 않는 fps입니다: 60 (10, 15, 30 중에서 고르세요)".to_string())
         );
         assert_eq!(
-            recorder.record(15, NO_SUCH_LEVEL, ORIGINAL, |_| {}),
+            recorder.record(15, NO_SUCH_LEVEL, ORIGINAL, Pick::Drag, |_| {}),
             Err("화질 단계는 1~6 사이여야 합니다: 9".to_string())
         );
         assert_eq!(
-            recorder.record(15, SETTINGS, NO_WIDTH, |_| {}),
+            recorder.record(15, SETTINGS, NO_WIDTH, Pick::Drag, |_| {}),
             Err("크기는 가로와 세로 모두 1 이상이어야 합니다.".to_string())
         );
         assert_eq!(
-            recorder.record(15, NO_ROOM, ORIGINAL, |_| {}),
+            recorder.record(15, NO_ROOM, ORIGINAL, Pick::Drag, |_| {}),
             Err("용량 목표는 1바이트 이상이어야 합니다: 0".to_string())
         );
         assert_eq!(*recorder.phase(), Phase::Idle);
@@ -383,7 +394,7 @@ mod tests {
     fn a_second_recording_is_refused_while_one_is_running() {
         let recorder = Recorder::default();
         let _session = recorder.begin().unwrap();
-        assert_eq!(recorder.record(15, SETTINGS, ORIGINAL, |_| {}), Err(ALREADY_RECORDING.to_string()));
+        assert_eq!(recorder.record(15, SETTINGS, ORIGINAL, Pick::Drag, |_| {}), Err(ALREADY_RECORDING.to_string()));
         assert_eq!(*recorder.phase(), Phase::Selecting);
     }
 

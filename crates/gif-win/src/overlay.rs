@@ -55,6 +55,7 @@ pub fn cancel_selection() {
     if let Ok(window) = unsafe { FindWindowW(CLASS_NAME, None) } {
         let _ = unsafe { PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0)) };
     }
+    crate::frame::cancel();
 }
 
 fn select_in_physical_pixels(monitor: MonitorId) -> Result<Option<ScreenRect>, CaptureError> {

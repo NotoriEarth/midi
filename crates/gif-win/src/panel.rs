@@ -8,7 +8,7 @@ use gif_core::session::ScreenRect;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CLEARTYPE_QUALITY, CreateFontIndirectW, CreateSolidBrush, DEFAULT_CHARSET, DT_CENTER, DT_SINGLELINE,
-    DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FONT_CHARSET, FillRect, HFONT, InvalidateRect, LOGFONTW,
+    DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FONT_CHARSET, FillRect, HDC, HFONT, InvalidateRect, LOGFONTW,
     PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -27,8 +27,8 @@ use crate::border::THICKNESS;
 use crate::capture::{monitor_bounds, system};
 
 const CLASS_NAME: PCWSTR = w!("midi-recording-panel");
-const BASE_SIZE: (i32, i32) = (184, 32);
-const BASE_DPI: u32 = 96;
+pub(crate) const BASE_SIZE: (i32, i32) = (184, 32);
+pub(crate) const BASE_DPI: u32 = 96;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelButton {
@@ -36,11 +36,11 @@ pub enum PanelButton {
     Cancel,
 }
 
-fn stop_width(height: i32) -> i32 {
+pub(crate) fn stop_width(height: i32) -> i32 {
     height * 13 / 8
 }
 
-fn button_at(x: i32, (width, height): (i32, i32)) -> Option<PanelButton> {
+pub(crate) fn button_at(x: i32, (width, height): (i32, i32)) -> Option<PanelButton> {
     match x {
         x if x < 0 || x >= width => None,
         x if x >= width - height => Some(PanelButton::Cancel),
@@ -53,7 +53,7 @@ fn remaining_label(left: Duration) -> String {
     format!("● {}초 남음", left.as_millis().div_ceil(1000))
 }
 
-fn panel_place(region: RECT, monitor: RECT, (width, height): (i32, i32), gap: i32) -> POINT {
+pub(crate) fn panel_place(region: RECT, monitor: RECT, (width, height): (i32, i32), gap: i32) -> POINT {
     let on_monitor = |x: i32| x.min(monitor.right - width).max(monitor.left);
     let x = on_monitor(region.right - width);
     let below = region.bottom + gap;
@@ -67,9 +67,9 @@ fn panel_place(region: RECT, monitor: RECT, (width, height): (i32, i32), gap: i3
     POINT { x: on_monitor((region.right - width - gap).max(region.left)), y: (region.bottom - height - gap).max(region.top) }
 }
 
-const PANEL_GRAY: COLORREF = COLORREF(0x0020_2020);
+pub(crate) const PANEL_GRAY: COLORREF = COLORREF(0x0020_2020);
 const BUTTON_GRAY: COLORREF = COLORREF(0x0048_4848);
-const RECORDING_RED: COLORREF = COLORREF(0x0039_35E5);
+pub(crate) const RECORDING_RED: COLORREF = COLORREF(0x0039_35E5);
 const WHITE: COLORREF = COLORREF(0x00FF_FFFF);
 const TICK: usize = 1;
 const TICK_MS: u32 = 200;
@@ -175,18 +175,7 @@ fn create_window(region: RECT, monitor: RECT, limit: Duration, pressed: Sender<P
         let place = panel_place(region, monitor, size, THICKNESS + scale(4));
         SetWindowPos(window, None, place.x, place.y, size.0, size.1, SWP_NOZORDER | SWP_NOACTIVATE).map_err(system)?;
 
-        let mut face = [0u16; 32];
-        for (slot, unit) in face.iter_mut().zip("Malgun Gothic".encode_utf16()) {
-            *slot = unit;
-        }
-        let font = CreateFontIndirectW(&LOGFONTW {
-            lfHeight: -scale(14),
-            lfWeight: 400,
-            lfCharSet: FONT_CHARSET(DEFAULT_CHARSET.0),
-            lfQuality: CLEARTYPE_QUALITY,
-            lfFaceName: face,
-            ..Default::default()
-        });
+        let font = bar_font(scale(14));
         PANEL.with_borrow_mut(|panel| *panel = Some(PanelState { started: Instant::now(), limit, size, font, pressed }));
 
         let _ = SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE);
@@ -244,30 +233,52 @@ unsafe extern "system" fn panel_proc(window: HWND, message: u32, wparam: WPARAM,
     }
 }
 
+pub(crate) fn bar_font(pixel_height: i32) -> HFONT {
+    let mut face = [0u16; 32];
+    for (slot, unit) in face.iter_mut().zip("Malgun Gothic".encode_utf16()) {
+        *slot = unit;
+    }
+    unsafe {
+        CreateFontIndirectW(&LOGFONTW {
+            lfHeight: -pixel_height,
+            lfWeight: 400,
+            lfCharSet: FONT_CHARSET(DEFAULT_CHARSET.0),
+            lfQuality: CLEARTYPE_QUALITY,
+            lfFaceName: face,
+            ..Default::default()
+        })
+    }
+}
+
+pub(crate) fn draw_bar(canvas: HDC, (width, height): (i32, i32), font: HFONT, label: &str, action: &str) {
+    let action_left = width - height - stop_width(height);
+    let parts = [
+        (RECT { left: 0, top: 0, right: action_left, bottom: height }, PANEL_GRAY, label),
+        (RECT { left: action_left, top: 0, right: width - height, bottom: height }, RECORDING_RED, action),
+        (RECT { left: width - height, top: 0, right: width, bottom: height }, BUTTON_GRAY, "✕"),
+    ];
+    unsafe {
+        let earlier_font = SelectObject(canvas, font.into());
+        SetBkMode(canvas, TRANSPARENT);
+        SetTextColor(canvas, WHITE);
+        for (mut area, color, label) in parts {
+            let brush = CreateSolidBrush(color);
+            FillRect(canvas, &area, brush);
+            let _ = DeleteObject(brush.into());
+            let mut text: Vec<u16> = label.encode_utf16().collect();
+            DrawTextW(canvas, &mut text, &mut area, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        SelectObject(canvas, earlier_font);
+    }
+}
+
 fn paint(window: HWND) {
     let mut paint = PAINTSTRUCT::default();
     let canvas = unsafe { BeginPaint(window, &mut paint) };
     PANEL.with_borrow(|panel| {
-        let Some(panel) = panel else { return };
-        let (width, height) = panel.size;
-        let stop_left = width - height - stop_width(height);
-        let parts = [
-            (RECT { left: 0, top: 0, right: stop_left, bottom: height }, PANEL_GRAY, remaining_label(panel.limit.saturating_sub(panel.started.elapsed()))),
-            (RECT { left: stop_left, top: 0, right: width - height, bottom: height }, RECORDING_RED, "끝".to_string()),
-            (RECT { left: width - height, top: 0, right: width, bottom: height }, BUTTON_GRAY, "✕".to_string()),
-        ];
-        unsafe {
-            let earlier_font = SelectObject(canvas, panel.font.into());
-            SetBkMode(canvas, TRANSPARENT);
-            SetTextColor(canvas, WHITE);
-            for (mut area, color, label) in parts {
-                let brush = CreateSolidBrush(color);
-                FillRect(canvas, &area, brush);
-                let _ = DeleteObject(brush.into());
-                let mut text: Vec<u16> = label.encode_utf16().collect();
-                DrawTextW(canvas, &mut text, &mut area, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            }
-            SelectObject(canvas, earlier_font);
+        if let Some(panel) = panel {
+            let left = remaining_label(panel.limit.saturating_sub(panel.started.elapsed()));
+            draw_bar(canvas, panel.size, panel.font, &left, "끝");
         }
     });
     let _ = unsafe { EndPaint(window, &paint) };
