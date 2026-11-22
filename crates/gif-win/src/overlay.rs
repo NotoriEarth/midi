@@ -279,10 +279,53 @@ mod tests {
         assert_eq!(region, None);
     }
 
+    fn white_patch(left: i32, top: i32, width: i32, height: i32) -> HWND {
+        use windows::Win32::Graphics::Gdi::UpdateWindow;
+        use windows::Win32::UI::WindowsAndMessaging::WS_EX_NOACTIVATE;
+
+        unsafe extern "system" fn plain(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+            unsafe { DefWindowProcW(window, message, wparam, lparam) }
+        }
+        let module = unsafe { GetModuleHandleW(None) }.unwrap();
+        static REGISTER: Once = Once::new();
+        REGISTER.call_once(|| {
+            let class = WNDCLASSEXW {
+                cbSize: size_of::<WNDCLASSEXW>() as u32,
+                lpfnWndProc: Some(plain),
+                hInstance: module.into(),
+                hbrBackground: HBRUSH(unsafe { GetStockObject(WHITE_BRUSH) }.0),
+                lpszClassName: w!("midi-test-white-patch"),
+                ..Default::default()
+            };
+            unsafe { RegisterClassExW(&class) };
+        });
+        unsafe {
+            let patch = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                w!("midi-test-white-patch"),
+                w!(""),
+                WS_POPUP,
+                left,
+                top,
+                width,
+                height,
+                None,
+                None,
+                Some(module.into()),
+                None,
+            )
+            .unwrap();
+            let _ = ShowWindow(patch, SW_SHOW);
+            let _ = UpdateWindow(patch);
+            patch
+        }
+    }
+
     #[test]
     #[ignore = "needs an unlocked desktop; run with --ignored"]
     fn the_dimming_is_gone_from_the_first_capture_after_selecting() {
         let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let patch = white_patch(300, 300, 200, 150);
         let mouse = post_when_the_overlay_is_up(vec![
             (WM_LBUTTONDOWN, WPARAM(1), at(100, 100)),
             (WM_MOUSEMOVE, WPARAM(1), at(200, 200)),
@@ -291,14 +334,13 @@ mod tests {
         select_region(PRIMARY).unwrap();
         mouse.join().unwrap();
 
-        let was_dimmed = ScreenRect { monitor: PRIMARY, x: 300, y: 300, width: 400, height: 300 };
-        let brightness = |pixels: Vec<[u8; 3]>| pixels.iter().flatten().map(|&channel| u64::from(channel)).sum::<u64>();
+        let inside_the_patch = ScreenRect { monitor: PRIMARY, x: 320, y: 320, width: 160, height: 110 };
         let mut capturer = crate::ScreenCapturer::open(PRIMARY).unwrap();
-        let at_once = brightness(capturer.capture(was_dimmed).unwrap());
-        thread::sleep(Duration::from_millis(500));
-        let later = brightness(capturer.capture(was_dimmed).unwrap());
+        let at_once = capturer.capture(inside_the_patch).unwrap();
+        unsafe { DestroyWindow(patch) }.unwrap();
 
-        assert!(at_once * 10 >= later * 9, "at once {at_once}, later {later}");
+        let darkest = at_once.iter().flatten().min().unwrap();
+        assert_eq!(*darkest, 255, "the white patch was still dimmed in the first capture");
     }
 
     #[test]
