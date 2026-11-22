@@ -6,6 +6,7 @@ mod clock;
 mod disk;
 mod hotkeys;
 mod overlay;
+mod panel;
 mod pixels;
 mod record;
 mod spool;
@@ -16,6 +17,7 @@ pub use clock::local_time;
 pub use disk::free_disk_bytes;
 pub use hotkeys::{HotkeyTaken, Hotkeys, KeyCombo};
 pub use overlay::{cancel_selection, select_region};
+pub use panel::{PanelButton, RecordingPanel};
 pub use record::record_screen;
 pub use spool::Spool;
 

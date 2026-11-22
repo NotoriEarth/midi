@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::time::Duration;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use gif_core::GifFps;
@@ -7,7 +8,10 @@ use gif_core::fit::{EncodeSettings, Encoded, Step, encode};
 use gif_core::resize::{OutputSize, ResizeError};
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
-use gif_win::{CaptureError, RecordingBorder, ScreenCapturer, Spool, free_disk_bytes, record_screen, select_region};
+use gif_win::{
+    CaptureError, PanelButton, RecordingBorder, RecordingPanel, ScreenCapturer, Spool, free_disk_bytes, record_screen,
+    select_region,
+};
 
 use crate::sample::{explain_encode, parse_fps};
 
@@ -126,8 +130,19 @@ impl Recorder {
         let started = Started { region, output_size, limit_ms: limit.milliseconds(fps), limited_by: limit.by };
         on_event(RecordingEvent::Started(started));
 
+        let border = RecordingBorder::show(region).ok();
+        let panel = RecordingPanel::show(region, Duration::from_millis(started.limit_ms.into())).ok();
         let not_written = RefCell::new(None);
-        let keep_going = || not_written.borrow().is_none() && *self.phase() == Phase::Recording;
+        let keep_going = || {
+            match panel.as_ref().and_then(RecordingPanel::pressed) {
+                Some(PanelButton::Stop) => {
+                    let _ = self.stop();
+                }
+                Some(PanelButton::Cancel) => self.cancel(),
+                None => {}
+            }
+            not_written.borrow().is_none() && *self.phase() == Phase::Recording
+        };
         let saw_a_picture = std::cell::Cell::new(false);
         let keep = |frame: Vec<Rgb>, slot: u32| {
             if !saw_a_picture.get() && !looks_black(&frame) {
@@ -137,9 +152,8 @@ impl Recorder {
                 not_written.replace(Some(problem));
             }
         };
-        let border = RecordingBorder::show(region).ok();
         let recorded = record_screen(&mut capturer, region, output_size, fps, limit.frames, keep_going, keep);
-        drop(border);
+        drop((border, panel));
         recorded.map_err(explain_capture)?;
         if let Some(problem) = not_written.into_inner() {
             return Err(explain_spool(problem));
