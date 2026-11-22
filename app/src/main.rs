@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use gif_win::{HotkeyTaken, Hotkeys, KeyCombo, cancel_selection, local_time, monitor_at_cursor, monitor_size};
 use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_notification::NotificationExt;
 
 use choice::QualityChoice;
@@ -325,6 +326,18 @@ fn record_and_save(app: &AppHandle, settings: RecordSettings) -> Result<Option<V
 }
 
 #[tauri::command]
+fn autostart_enabled(app: AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|error| format!("자동 실행 상태를 읽지 못했습니다: {error}"))
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let autolaunch = app.autolaunch();
+    let changed = if enabled { autolaunch.enable() } else { autolaunch.disable() };
+    changed.map_err(|error| format!("자동 실행을 바꾸지 못했습니다: {error}"))
+}
+
+#[tauri::command]
 fn stop_recording(recorder: State<Recorder>) {
     let _ = recorder.stop();
 }
@@ -336,7 +349,12 @@ fn cancel_recording(recorder: State<Recorder>) {
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _arguments, _folder| show_main_window(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, arguments, _folder| {
+            if !tray::starts_hidden(&arguments) {
+                show_main_window(app);
+            }
+        }))
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![tray::START_HIDDEN])))
         .plugin(tauri_plugin_notification::init())
         .manage(Recorder::default())
         .manage(LastSaved::default())
@@ -349,6 +367,9 @@ fn main() {
             app.manage(BeginHotkey(begin));
             app.manage(hotkeys);
             tray::install(app.handle(), on_tray)?;
+            if !tray::starts_hidden(std::env::args()) {
+                show_main_window(app.handle());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -357,7 +378,7 @@ fn main() {
                 hide_to_tray(window);
             }
         })
-        .invoke_handler(tauri::generate_handler![make_sample_gif, begin_recording, last_gif, stop_recording, cancel_recording, begin_hotkey, show_saved_gif, quality_levels, saved_settings, remember_settings])
+        .invoke_handler(tauri::generate_handler![make_sample_gif, begin_recording, last_gif, stop_recording, cancel_recording, begin_hotkey, show_saved_gif, quality_levels, saved_settings, remember_settings, autostart_enabled, set_autostart])
         .run(tauri::generate_context!())
         .expect("the app window can be created");
 }

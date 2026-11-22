@@ -58,6 +58,12 @@ label {
   gap: 6px;
 }
 
+label.inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 output {
   font-variant-numeric: tabular-nums;
   color: var(--muted);

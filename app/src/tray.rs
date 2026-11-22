@@ -29,6 +29,12 @@ const MENU: [(&str, &str, TrayAction); 4] = [
     ("quit", "종료", TrayAction::Quit),
 ];
 
+pub const START_HIDDEN: &str = "--hidden";
+
+pub fn starts_hidden<T: AsRef<str>>(arguments: impl IntoIterator<Item = T>) -> bool {
+    arguments.into_iter().any(|argument| argument.as_ref() == START_HIDDEN)
+}
+
 pub fn tooltip(state: TrayState) -> String {
     match state {
         TrayState::Idle => "midi: 클릭하면 녹화할 영역을 고릅니다".to_string(),
@@ -120,5 +126,14 @@ mod tests {
         let expected = [TrayAction::BeginSelection, TrayAction::ShowWindow, TrayAction::OpenSaveFolder, TrayAction::Quit];
         assert_eq!(actions, expected.map(Some));
         assert_eq!(action_of("something else"), None);
+    }
+
+    #[test]
+    fn the_app_starts_hidden_only_when_asked_to() {
+        assert!(starts_hidden(["midi-app.exe", "--hidden"]));
+        assert!(starts_hidden(["midi-app.exe", "--something", "--hidden"]));
+        assert!(!starts_hidden(["midi-app.exe"]));
+        assert!(!starts_hidden(["midi-app.exe", "--hiddenness"]));
+        assert!(!starts_hidden(Vec::<String>::new()));
     }
 }

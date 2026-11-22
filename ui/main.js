@@ -283,6 +283,21 @@ Promise.all([invoke("quality_levels"), invoke("saved_settings")]).then(([fromRus
   showSettings(saved);
 });
 
+const autostart = document.querySelector("#autostart");
+invoke("autostart_enabled").then(
+  (enabled) => (autostart.checked = enabled),
+  (problem) => {
+    autostart.disabled = true;
+    status.textContent = problem;
+  },
+);
+autostart.addEventListener("change", () => {
+  invoke("set_autostart", { enabled: autostart.checked }).catch((problem) => {
+    autostart.checked = !autostart.checked;
+    status.textContent = problem;
+  });
+});
+
 invoke("begin_hotkey").then(
   (keys) => (hotkey.textContent = `${keys}: 영역 선택 시작 · Enter: 녹화 끝 · Esc: 취소`),
   (problem) => (hotkey.textContent = problem),
