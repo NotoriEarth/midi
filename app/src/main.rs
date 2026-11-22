@@ -336,6 +336,7 @@ fn cancel_recording(recorder: State<Recorder>) {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _arguments, _folder| show_main_window(app)))
         .plugin(tauri_plugin_notification::init())
         .manage(Recorder::default())
         .manage(LastSaved::default())
