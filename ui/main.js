@@ -70,7 +70,7 @@ record.addEventListener("click", async () => {
     return;
   }
   record.disabled = true;
-  await showGif("record_screen_gif", { ...settings(), scale: Number(scale.value) }, "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.");
+  await showGif("record_screen_gif", { settings: { ...settings(), scale: Number(scale.value) } }, "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.");
   record.disabled = false;
   showRecording(false);
 });

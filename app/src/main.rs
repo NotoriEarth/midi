@@ -83,16 +83,21 @@ fn begin_hotkey(begin: State<BeginHotkey>) -> Result<String, String> {
     })
 }
 
+#[derive(serde::Deserialize)]
+struct RecordSettings {
+    fps: u32,
+    colors: usize,
+    dither: f32,
+    scale: u32,
+}
+
 #[tauri::command(async)]
 fn record_screen_gif(
     window: WebviewWindow,
     recorder: State<Recorder>,
     hotkeys: State<Hotkeys>,
     last: State<LastSaved>,
-    fps: u32,
-    colors: usize,
-    dither: f32,
-    scale: u32,
+    settings: RecordSettings,
 ) -> Result<Response, String> {
     let _keys = KeysWhileRecording(&hotkeys);
     let _ = hotkeys.register(CANCEL_KEY, KeyCombo::ESCAPE);
@@ -100,6 +105,7 @@ fn record_screen_gif(
         let _ = hotkeys.register(STOP_KEY, KeyCombo::ENTER);
         let _ = window.emit(RECORDING_STARTED, ((region.width, region.height), output_size));
     };
+    let RecordSettings { fps, colors, dither, scale } = settings;
     let gif = recorder.record(fps, colors, dither, scale, tell_the_page)?;
     if let Some(gif) = &gif {
         let saved = save_to_pictures(window.app_handle(), gif);

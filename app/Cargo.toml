@@ -9,4 +9,5 @@ tauri-build = "2"
 [dependencies]
 gif-core = { path = "../crates/gif-core" }
 gif-win = { path = "../crates/gif-win" }
+serde = { version = "1", features = ["derive"] }
 tauri = "2"
