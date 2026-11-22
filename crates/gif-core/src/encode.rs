@@ -13,7 +13,11 @@ pub struct ManualSettings {
 pub enum EncodeError {
     EmptyImage,
     NoFrames,
-    FrameSize { frame: usize, expected: usize, actual: usize },
+    FrameSize {
+        frame: usize,
+        expected: usize,
+        actual: usize,
+    },
     Colors(usize),
     Dither(f32),
 }
@@ -74,7 +78,11 @@ fn check_input(
         return Err(EncodeError::NoFrames);
     }
     match frames.iter().position(|frame| frame.len() != expected) {
-        Some(frame) => Err(EncodeError::FrameSize { frame, expected, actual: frames[frame].len() }),
+        Some(frame) => Err(EncodeError::FrameSize {
+            frame,
+            expected,
+            actual: frames[frame].len(),
+        }),
         None => Ok(()),
     }
 }
@@ -83,7 +91,10 @@ fn check_input(
 mod tests {
     use super::*;
 
-    const SHARP: ManualSettings = ManualSettings { colors: 255, dither: 0.0 };
+    const SHARP: ManualSettings = ManualSettings {
+        colors: 255,
+        dither: 0.0,
+    };
 
     fn shown_frames(bytes: &[u8]) -> Vec<(u16, Vec<Rgb>)> {
         let mut options = gif::DecodeOptions::new();
@@ -117,7 +128,11 @@ mod tests {
         (0..width * height)
             .map(|index| {
                 let (x, y) = (index % width, index / width);
-                [(x * 255 / (width - 1)) as u8, (y * 255 / (height - 1)) as u8, ((x + y + shift) % 256) as u8]
+                [
+                    (x * 255 / (width - 1)) as u8,
+                    (y * 255 / (height - 1)) as u8,
+                    ((x + y + shift) % 256) as u8,
+                ]
             })
             .collect()
     }
@@ -130,13 +145,19 @@ mod tests {
         let second = [red, blue, blue, red];
 
         let bytes = encode_gif(2, 2, &[&first, &second], GifFps::Fps10, SHARP).unwrap();
-        assert_eq!(shown_frames(&bytes), [(10, first.to_vec()), (10, second.to_vec())]);
+        assert_eq!(
+            shown_frames(&bytes),
+            [(10, first.to_vec()), (10, second.to_vec())]
+        );
     }
 
     #[test]
     fn the_picture_never_uses_more_colors_than_asked() {
         let frame = ramp(64, 48, 0);
-        let settings = ManualSettings { colors: 16, dither: 1.0 };
+        let settings = ManualSettings {
+            colors: 16,
+            dither: 1.0,
+        };
         let bytes = encode_gif(64, 48, &[&frame], GifFps::Fps10, settings).unwrap();
 
         let mut used = shown_frames(&bytes)[0].1.clone();
@@ -149,21 +170,37 @@ mod tests {
     fn it_gives_the_same_file_as_running_each_step_by_hand() {
         let frames = [ramp(48, 32, 0), ramp(48, 32, 40)];
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        let settings = ManualSettings { colors: 64, dither: 0.5 };
+        let settings = ManualSettings {
+            colors: 64,
+            dither: 0.5,
+        };
 
         let palette = Palette::from_frames(&slices, 64).unwrap();
-        let indexed: Vec<Vec<u8>> =
-            slices.iter().map(|frame| ordered_dither(&palette, frame, 48, 0.5).unwrap()).collect();
+        let indexed: Vec<Vec<u8>> = slices
+            .iter()
+            .map(|frame| ordered_dither(&palette, frame, 48, 0.5).unwrap())
+            .collect();
         let indexed: Vec<&[u8]> = indexed.iter().map(Vec::as_slice).collect();
         let by_hand = write_gif(48, 32, palette.colors(), &indexed, GifFps::Fps15).unwrap();
 
-        assert_eq!(encode_gif(48, 32, &slices, GifFps::Fps15, settings), Ok(by_hand));
+        assert_eq!(
+            encode_gif(48, 32, &slices, GifFps::Fps15, settings),
+            Ok(by_hand)
+        );
     }
 
     #[test]
     fn settings_outside_their_range_are_rejected() {
         let frame = [[0, 0, 0]];
-        let encode = |colors, dither| encode_gif(1, 1, &[&frame], GifFps::Fps10, ManualSettings { colors, dither });
+        let encode = |colors, dither| {
+            encode_gif(
+                1,
+                1,
+                &[&frame],
+                GifFps::Fps10,
+                ManualSettings { colors, dither },
+            )
+        };
 
         assert_eq!(encode(1, 0.0), Err(EncodeError::Colors(1)));
         assert_eq!(encode(256, 0.0), Err(EncodeError::Colors(256)));
@@ -178,11 +215,21 @@ mod tests {
     fn frames_that_do_not_fit_the_size_are_rejected() {
         let two = [[0, 0, 0]; 2];
         let three = [[0, 0, 0]; 3];
-        assert_eq!(encode_gif(0, 2, &[&two], GifFps::Fps10, SHARP), Err(EncodeError::EmptyImage));
-        assert_eq!(encode_gif(2, 1, &[], GifFps::Fps10, SHARP), Err(EncodeError::NoFrames));
+        assert_eq!(
+            encode_gif(0, 2, &[&two], GifFps::Fps10, SHARP),
+            Err(EncodeError::EmptyImage)
+        );
+        assert_eq!(
+            encode_gif(2, 1, &[], GifFps::Fps10, SHARP),
+            Err(EncodeError::NoFrames)
+        );
         assert_eq!(
             encode_gif(2, 1, &[&two, &three], GifFps::Fps10, SHARP),
-            Err(EncodeError::FrameSize { frame: 1, expected: 2, actual: 3 })
+            Err(EncodeError::FrameSize {
+                frame: 1,
+                expected: 2,
+                actual: 3
+            })
         );
     }
 }

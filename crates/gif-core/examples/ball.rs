@@ -9,13 +9,24 @@ const RADIUS: i64 = 12;
 const BALL: Rgb = [255, 240, 80];
 
 fn main() {
-    let path = std::env::args().nth(1).unwrap_or_else(|| "ball.gif".to_string());
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "ball.gif".to_string());
     let frames: Vec<Vec<Rgb>> = (0..FRAMES).map(frame).collect();
     let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
 
-    let settings = ManualSettings { colors: ManualSettings::MAX_COLORS, dither: 1.0 };
-    let bytes = encode_gif(WIDTH as u16, HEIGHT as u16, &frames, GifFps::Fps30, settings)
-        .expect("frames are WIDTH x HEIGHT and the settings are in range");
+    let settings = ManualSettings {
+        colors: ManualSettings::MAX_COLORS,
+        dither: 1.0,
+    };
+    let bytes = encode_gif(
+        WIDTH as u16,
+        HEIGHT as u16,
+        &frames,
+        GifFps::Fps30,
+        settings,
+    )
+    .expect("frames are WIDTH x HEIGHT and the settings are in range");
     std::fs::write(&path, &bytes).expect("the output path is writable");
     println!("{path}: {} bytes, {} frames", bytes.len(), frames.len());
 }

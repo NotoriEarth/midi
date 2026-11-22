@@ -8,7 +8,11 @@ pub fn frame_delays(fps: GifFps, frame_count: usize) -> Vec<u16> {
 
     (0..frame_count as u64)
         .map(|index| {
-            let start = if index == 0 { 0 } else { end_of_frame(index - 1) };
+            let start = if index == 0 {
+                0
+            } else {
+                end_of_frame(index - 1)
+            };
             (end_of_frame(index) - start) as u16
         })
         .collect()

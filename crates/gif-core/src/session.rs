@@ -78,19 +78,35 @@ mod tests {
     use super::*;
 
     fn region() -> ScreenRect {
-        ScreenRect { monitor: MonitorId(1), x: 100, y: 50, width: 640, height: 360 }
+        ScreenRect {
+            monitor: MonitorId(1),
+            x: 100,
+            y: 50,
+            width: 640,
+            height: 360,
+        }
     }
 
     fn resized() -> ScreenRect {
-        ScreenRect { width: 800, height: 450, ..region() }
+        ScreenRect {
+            width: 800,
+            height: 450,
+            ..region()
+        }
     }
 
     fn drag(control: RecordControl) -> SessionConfig {
-        SessionConfig { selection: SelectionMode::Drag, control }
+        SessionConfig {
+            selection: SelectionMode::Drag,
+            control,
+        }
     }
 
     fn frame(control: RecordControl) -> SessionConfig {
-        SessionConfig { selection: SelectionMode::Frame { initial: region() }, control }
+        SessionConfig {
+            selection: SelectionMode::Frame { initial: region() },
+            control,
+        }
     }
 
     #[test]
@@ -110,34 +126,62 @@ mod tests {
     #[test]
     fn button_mode_waits_for_the_start_button() {
         let region = region();
-        assert_eq!(step(Selecting, RegionSelected { region }, drag(Button)), Armed { region });
-        assert_eq!(step(Armed { region }, StartClicked, drag(Button)), Recording { region });
+        assert_eq!(
+            step(Selecting, RegionSelected { region }, drag(Button)),
+            Armed { region }
+        );
+        assert_eq!(
+            step(Armed { region }, StartClicked, drag(Button)),
+            Recording { region }
+        );
     }
 
     #[test]
     fn frame_mode_skips_the_drag_and_shows_the_frame_where_it_was_left() {
         for control in [Immediate, Button] {
-            assert_eq!(step(Idle, BeginSelection, frame(control)), Armed { region: region() });
+            assert_eq!(
+                step(Idle, BeginSelection, frame(control)),
+                Armed { region: region() }
+            );
         }
     }
 
     #[test]
     fn the_frame_can_be_moved_and_resized_until_recording_starts() {
-        let armed = step(Armed { region: region() }, RegionChanged { region: resized() }, frame(Button));
+        let armed = step(
+            Armed { region: region() },
+            RegionChanged { region: resized() },
+            frame(Button),
+        );
         assert_eq!(armed, Armed { region: resized() });
-        assert_eq!(step(armed, StartClicked, frame(Button)), Recording { region: resized() });
+        assert_eq!(
+            step(armed, StartClicked, frame(Button)),
+            Recording { region: resized() }
+        );
     }
 
     #[test]
     fn the_region_is_locked_while_recording() {
         let recording = Recording { region: region() };
-        assert_eq!(step(recording, RegionChanged { region: resized() }, frame(Button)), recording);
+        assert_eq!(
+            step(
+                recording,
+                RegionChanged { region: resized() },
+                frame(Button)
+            ),
+            recording
+        );
     }
 
     #[test]
     fn stopping_a_recording_starts_encoding() {
         let region = region();
-        for config in [drag(Immediate), drag(Button), frame(Immediate), frame(Button)] {
+        for config in [
+            drag(Immediate),
+            drag(Button),
+            frame(Immediate),
+            frame(Button),
+        ] {
             assert_eq!(step(Recording { region }, Stop, config), Encoding);
         }
     }
@@ -174,7 +218,11 @@ mod tests {
             (Encoding, Cancel),
         ];
         for (state, event) in ignored {
-            assert_eq!(step(state, event, drag(Button)), state, "{state:?} + {event:?}");
+            assert_eq!(
+                step(state, event, drag(Button)),
+                state,
+                "{state:?} + {event:?}"
+            );
         }
     }
 }

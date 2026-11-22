@@ -10,8 +10,15 @@ pub enum GifWriteError {
     EmptyImage,
     NoFrames,
     PaletteSize(usize),
-    FrameSize { frame: usize, expected: usize, actual: usize },
-    ColorOutOfPalette { frame: usize, index: u8 },
+    FrameSize {
+        frame: usize,
+        expected: usize,
+        actual: usize,
+    },
+    ColorOutOfPalette {
+        frame: usize,
+        index: u8,
+    },
 }
 
 pub fn write_gif(
@@ -31,7 +38,9 @@ pub fn write_gif(
     let row_width = usize::from(width);
 
     let first = FramePatch::whole_frame(frames[0], row_width);
-    let later = frames.windows(2).map(|pair| changed_patch(pair[0], pair[1], row_width, transparent));
+    let later = frames
+        .windows(2)
+        .map(|pair| changed_patch(pair[0], pair[1], row_width, transparent));
     let patches = std::iter::once(first).chain(later);
 
     let mut out = Vec::new();
@@ -74,7 +83,10 @@ fn check_input(pixel_count: usize, palette: &[Rgb], frames: &[&[u8]]) -> Result<
                 actual: pixels.len(),
             });
         }
-        if let Some(&index) = pixels.iter().find(|&&index| usize::from(index) >= palette.len()) {
+        if let Some(&index) = pixels
+            .iter()
+            .find(|&&index| usize::from(index) >= palette.len())
+        {
             return Err(GifWriteError::ColorOutOfPalette { frame, index });
         }
     }
@@ -82,7 +94,9 @@ fn check_input(pixel_count: usize, palette: &[Rgb], frames: &[&[u8]]) -> Result<
 }
 
 fn color_table_bits(color_count: usize) -> u8 {
-    (1..=8).find(|&bits| (1usize << bits) >= color_count).unwrap_or(8)
+    (1..=8)
+        .find(|&bits| (1usize << bits) >= color_count)
+        .unwrap_or(8)
 }
 
 fn write_header(out: &mut Vec<u8>, width: u16, height: u16, table_bits: u8) {
@@ -263,19 +277,33 @@ mod tests {
     fn an_independent_decoder_reads_back_the_same_pixels() {
         let first = [0, 1, 2, 2, 1, 0];
         let second = [2, 2, 2, 0, 0, 0];
-        let bytes = write_gif(3, 2, &[BLACK, RED, GREEN], &[&first, &second], GifFps::Fps10).unwrap();
+        let bytes = write_gif(
+            3,
+            2,
+            &[BLACK, RED, GREEN],
+            &[&first, &second],
+            GifFps::Fps10,
+        )
+        .unwrap();
 
         let decoded = decode(&bytes);
         assert_eq!((decoded.width, decoded.height), (3, 2));
         assert_eq!(decoded.palette[..9], [0, 0, 0, 255, 0, 0, 0, 255, 0]);
-        assert_eq!(decoded.frames, [(10, first.to_vec()), (10, second.to_vec())]);
+        assert_eq!(
+            decoded.frames,
+            [(10, first.to_vec()), (10, second.to_vec())]
+        );
     }
 
     #[test]
     fn frame_delays_follow_the_frame_rate() {
         let frame = [0u8; 4];
         let bytes = write_gif(2, 2, &[BLACK, RED], &[&frame[..]; 3], GifFps::Fps30).unwrap();
-        let delays: Vec<u16> = decode(&bytes).frames.iter().map(|(delay, _)| *delay).collect();
+        let delays: Vec<u16> = decode(&bytes)
+            .frames
+            .iter()
+            .map(|(delay, _)| *delay)
+            .collect();
         assert_eq!(delays, [3, 3, 4]);
     }
 
@@ -315,7 +343,9 @@ mod tests {
     fn a_repeating_pattern_survives_the_round_trip_at_every_palette_size() {
         for color_count in [1usize, 2, 3, 4, 5, 15, 16, 127, 128, 255] {
             let palette = vec![BLACK; color_count];
-            let pixels: Vec<u8> = (0..97 * 61).map(|index| ((index / 7) % color_count) as u8).collect();
+            let pixels: Vec<u8> = (0..97 * 61)
+                .map(|index| ((index / 7) % color_count) as u8)
+                .collect();
             let bytes = write_gif(97, 61, &palette, &[&pixels], GifFps::Fps10).unwrap();
             assert_eq!(decode(&bytes).frames[0].1, pixels, "{color_count} colors");
         }
@@ -350,7 +380,11 @@ mod tests {
         let slices: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
 
         let bytes = write_gif(60, 40, &yellows(), &slices, GifFps::Fps10).unwrap();
-        let shown: Vec<Vec<u8>> = decode(&bytes).frames.into_iter().map(|(_, pixels)| pixels).collect();
+        let shown: Vec<Vec<u8>> = decode(&bytes)
+            .frames
+            .into_iter()
+            .map(|(_, pixels)| pixels)
+            .collect();
         assert_eq!(shown, frames);
     }
 
@@ -373,7 +407,12 @@ mod tests {
     fn identical_frames_still_show_for_their_full_time() {
         let frame = [0u8, 1, 1, 0];
         let bytes = write_gif(2, 2, &[BLACK, RED], &[&frame[..]; 4], GifFps::Fps15).unwrap();
-        let shown = vec![(6, frame.to_vec()), (7, frame.to_vec()), (7, frame.to_vec()), (6, frame.to_vec())];
+        let shown = vec![
+            (6, frame.to_vec()),
+            (7, frame.to_vec()),
+            (7, frame.to_vec()),
+            (6, frame.to_vec()),
+        ];
         assert_eq!(decode(&bytes).frames, shown);
     }
 
@@ -389,16 +428,29 @@ mod tests {
     fn input_that_cannot_become_a_gif_is_rejected() {
         let ok_frame: &[u8] = &[0, 0];
         let fps = GifFps::Fps10;
-        assert_eq!(write_gif(0, 2, &[BLACK], &[ok_frame], fps), Err(GifWriteError::EmptyImage));
-        assert_eq!(write_gif(2, 1, &[BLACK], &[], fps), Err(GifWriteError::NoFrames));
-        assert_eq!(write_gif(2, 1, &[], &[ok_frame], fps), Err(GifWriteError::PaletteSize(0)));
+        assert_eq!(
+            write_gif(0, 2, &[BLACK], &[ok_frame], fps),
+            Err(GifWriteError::EmptyImage)
+        );
+        assert_eq!(
+            write_gif(2, 1, &[BLACK], &[], fps),
+            Err(GifWriteError::NoFrames)
+        );
+        assert_eq!(
+            write_gif(2, 1, &[], &[ok_frame], fps),
+            Err(GifWriteError::PaletteSize(0))
+        );
         assert_eq!(
             write_gif(2, 1, &[BLACK; 256], &[ok_frame], fps),
             Err(GifWriteError::PaletteSize(256))
         );
         assert_eq!(
             write_gif(2, 1, &[BLACK], &[ok_frame, &[0]], fps),
-            Err(GifWriteError::FrameSize { frame: 1, expected: 2, actual: 1 })
+            Err(GifWriteError::FrameSize {
+                frame: 1,
+                expected: 2,
+                actual: 1
+            })
         );
         assert_eq!(
             write_gif(2, 1, &[BLACK, RED], &[&[0, 2]], fps),

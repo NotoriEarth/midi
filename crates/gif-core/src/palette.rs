@@ -41,7 +41,9 @@ impl Palette {
             boxes.push(upper);
         }
 
-        Ok(Palette(boxes.iter().map(|colors| average(colors)).collect()))
+        Ok(Palette(
+            boxes.iter().map(|colors| average(colors)).collect(),
+        ))
     }
 
     pub fn colors(&self) -> &[Rgb] {
@@ -65,7 +67,9 @@ impl Palette {
 }
 
 fn squared_distance(a: Rgb, b: Rgb) -> u32 {
-    (0..3).map(|channel| u32::from(a[channel].abs_diff(b[channel])).pow(2)).sum()
+    (0..3)
+        .map(|channel| u32::from(a[channel].abs_diff(b[channel])).pow(2))
+        .sum()
 }
 
 fn widest_channel(colors: &[CountedColor]) -> (u8, usize) {
@@ -101,7 +105,9 @@ fn split_at_median(mut colors: Vec<CountedColor>) -> (Vec<CountedColor>, Vec<Cou
         seen += count;
         seen >= half
     });
-    let cut = reaches_half.map_or(1, |position| position + 1).clamp(1, colors.len() - 1);
+    let cut = reaches_half
+        .map_or(1, |position| position + 1)
+        .clamp(1, colors.len() - 1);
 
     let upper = colors.split_off(cut);
     (colors, upper)
@@ -110,7 +116,10 @@ fn split_at_median(mut colors: Vec<CountedColor>) -> (Vec<CountedColor>, Vec<Cou
 fn average(colors: &[CountedColor]) -> Rgb {
     let total = pixel_count(colors);
     std::array::from_fn(|channel| {
-        let sum: u64 = colors.iter().map(|(color, count)| u64::from(color[channel]) * count).sum();
+        let sum: u64 = colors
+            .iter()
+            .map(|(color, count)| u64::from(color[channel]) * count)
+            .sum();
         ((sum + total / 2) / total) as u8
     })
 }
@@ -126,7 +135,10 @@ mod tests {
     }
 
     fn channel_distance(a: Rgb, b: Rgb) -> u8 {
-        (0..3).map(|channel| a[channel].abs_diff(b[channel])).max().unwrap()
+        (0..3)
+            .map(|channel| a[channel].abs_diff(b[channel]))
+            .max()
+            .unwrap()
     }
 
     #[test]
@@ -135,14 +147,19 @@ mod tests {
         let palette = Palette::from_frames(&[&pixels], Palette::MAX_COLORS).unwrap();
 
         assert_eq!(palette.colors().len(), 3);
-        let restored: Vec<Rgb> =
-            palette.to_indices(&pixels).iter().map(|&index| palette.colors()[usize::from(index)]).collect();
+        let restored: Vec<Rgb> = palette
+            .to_indices(&pixels)
+            .iter()
+            .map(|&index| palette.colors()[usize::from(index)])
+            .collect();
         assert_eq!(restored, pixels);
     }
 
     #[test]
     fn more_colors_than_the_limit_are_reduced_to_exactly_the_limit() {
-        let pixels: Vec<Rgb> = (0..=255).flat_map(|r| (0..=255).step_by(5).map(move |g| [r, g, 128])).collect();
+        let pixels: Vec<Rgb> = (0..=255)
+            .flat_map(|r| (0..=255).step_by(5).map(move |g| [r, g, 128]))
+            .collect();
         let palette = Palette::from_frames(&[&pixels], 16).unwrap();
         assert_eq!(palette.colors().len(), 16);
     }
@@ -154,7 +171,10 @@ mod tests {
 
         for (&pixel, &index) in pixels.iter().zip(&palette.to_indices(&pixels)) {
             let shown = palette.colors()[usize::from(index)];
-            assert!(channel_distance(pixel, shown) <= 8, "{pixel:?} shown as {shown:?}");
+            assert!(
+                channel_distance(pixel, shown) <= 8,
+                "{pixel:?} shown as {shown:?}"
+            );
         }
     }
 
@@ -176,7 +196,11 @@ mod tests {
         pixels.push(gray(200));
         pixels.push([255, 0, 0]);
         let palette = Palette::from_frames(&[&pixels], 2).unwrap();
-        assert!(palette.colors().contains(&gray(100)), "{:?}", palette.colors());
+        assert!(
+            palette.colors().contains(&gray(100)),
+            "{:?}",
+            palette.colors()
+        );
     }
 
     #[test]
@@ -197,12 +221,17 @@ mod tests {
         let white = palette.to_indices(&[gray(255)])[0];
         assert_ne!(black, white);
 
-        assert_eq!(palette.to_indices(&[gray(10), gray(200), [120, 130, 140]]), [black, white, white]);
+        assert_eq!(
+            palette.to_indices(&[gray(10), gray(200), [120, 130, 140]]),
+            [black, white, white]
+        );
     }
 
     #[test]
     fn the_same_input_always_gives_the_same_palette() {
-        let pixels: Vec<Rgb> = (0..5000u32).map(|n| [(n * 7) as u8, (n * 13) as u8, (n * 29) as u8]).collect();
+        let pixels: Vec<Rgb> = (0..5000u32)
+            .map(|n| [(n * 7) as u8, (n * 13) as u8, (n * 29) as u8])
+            .collect();
         let first = Palette::from_frames(&[&pixels], 32).unwrap();
         for _ in 0..5 {
             assert_eq!(Palette::from_frames(&[&pixels], 32).unwrap(), first);
@@ -213,14 +242,25 @@ mod tests {
     fn input_that_cannot_make_a_palette_is_rejected() {
         let pixel = [gray(0)];
         assert_eq!(Palette::from_frames(&[], 255), Err(PaletteError::NoPixels));
-        assert_eq!(Palette::from_frames(&[&[]], 255), Err(PaletteError::NoPixels));
-        assert_eq!(Palette::from_frames(&[&pixel], 0), Err(PaletteError::ColorLimit(0)));
-        assert_eq!(Palette::from_frames(&[&pixel], 256), Err(PaletteError::ColorLimit(256)));
+        assert_eq!(
+            Palette::from_frames(&[&[]], 255),
+            Err(PaletteError::NoPixels)
+        );
+        assert_eq!(
+            Palette::from_frames(&[&pixel], 0),
+            Err(PaletteError::ColorLimit(0))
+        );
+        assert_eq!(
+            Palette::from_frames(&[&pixel], 256),
+            Err(PaletteError::ColorLimit(256))
+        );
     }
 
     #[test]
     fn rgb_frames_become_a_gif_that_decodes_to_the_same_colors() {
-        let frame: Vec<Rgb> = (0..12 * 12).map(|n| [(n % 12 * 20) as u8, (n / 12 * 20) as u8, 90]).collect();
+        let frame: Vec<Rgb> = (0..12 * 12)
+            .map(|n| [(n % 12 * 20) as u8, (n / 12 * 20) as u8, 90])
+            .collect();
         let palette = Palette::from_frames(&[&frame], Palette::MAX_COLORS).unwrap();
         let indices = palette.to_indices(&frame);
         let bytes = write_gif(12, 12, palette.colors(), &[&indices], GifFps::Fps10).unwrap();
@@ -229,7 +269,11 @@ mod tests {
         options.set_color_output(gif::ColorOutput::RGBA);
         let mut decoder = options.read_info(&bytes[..]).unwrap();
         let decoded = decoder.read_next_frame().unwrap().unwrap();
-        let shown: Vec<Rgb> = decoded.buffer.chunks(4).map(|rgba| [rgba[0], rgba[1], rgba[2]]).collect();
+        let shown: Vec<Rgb> = decoded
+            .buffer
+            .chunks(4)
+            .map(|rgba| [rgba[0], rgba[1], rgba[2]])
+            .collect();
         assert_eq!(shown, frame);
     }
 }

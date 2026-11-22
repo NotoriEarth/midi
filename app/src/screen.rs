@@ -36,17 +36,26 @@ impl Recorder {
         self.begin()?;
         let _back_to_idle = BackToIdle(self);
 
-        let region = ScreenRect { monitor: PRIMARY, x: 0, y: 0, width: WIDTH, height: HEIGHT };
+        let region = ScreenRect {
+            monitor: PRIMARY,
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        };
         let mut capturer = ScreenCapturer::open(PRIMARY).map_err(explain_capture)?;
         let max_frames = fps.per_second() * MAX_SECONDS;
         let keep_going = || *self.phase() == Phase::Recording;
-        let frames = record_screen(&mut capturer, region, fps, max_frames, keep_going).map_err(explain_capture)?;
+        let frames = record_screen(&mut capturer, region, fps, max_frames, keep_going)
+            .map_err(explain_capture)?;
 
         if !self.encode_unless_cancelled() {
             return Ok(None);
         }
         let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        encode_gif(WIDTH as u16, HEIGHT as u16, &frames, fps, settings).map(Some).map_err(explain_encode)
+        encode_gif(WIDTH as u16, HEIGHT as u16, &frames, fps, settings)
+            .map(Some)
+            .map_err(explain_encode)
     }
 
     pub fn stop(&self) {
@@ -100,10 +109,17 @@ fn explain_capture(error: CaptureError) -> String {
         CaptureError::NoSuchMonitor(_) => {
             "캡처할 모니터를 찾지 못했습니다. 화면이 잠겨 있지 않은지 확인하세요.".to_string()
         }
-        CaptureError::RegionOutsideMonitor { monitor_width, monitor_height } => {
-            format!("모니터({monitor_width}×{monitor_height})가 녹화 영역 {WIDTH}×{HEIGHT}보다 작습니다.")
+        CaptureError::RegionOutsideMonitor {
+            monitor_width,
+            monitor_height,
+        } => {
+            format!(
+                "모니터({monitor_width}×{monitor_height})가 녹화 영역 {WIDTH}×{HEIGHT}보다 작습니다."
+            )
         }
-        CaptureError::AccessLost => "녹화 중에 화면 모드가 바뀌어 캡처가 끊겼습니다. 다시 시도하세요.".to_string(),
+        CaptureError::AccessLost => {
+            "녹화 중에 화면 모드가 바뀌어 캡처가 끊겼습니다. 다시 시도하세요.".to_string()
+        }
         CaptureError::NoFrameYet => "화면 그림을 받지 못했습니다. 다시 시도하세요.".to_string(),
         other => format!("화면을 캡처하지 못했습니다: {other:?}"),
     }
@@ -131,7 +147,10 @@ mod tests {
             recorder.record(60, 64, 0.5),
             Err("지원하지 않는 fps입니다: 60 (10, 15, 30 중에서 고르세요)".to_string())
         );
-        assert_eq!(recorder.record(15, 1, 0.5), Err("색 수는 2~255 사이여야 합니다: 1".to_string()));
+        assert_eq!(
+            recorder.record(15, 1, 0.5),
+            Err("색 수는 2~255 사이여야 합니다: 1".to_string())
+        );
         assert_eq!(*recorder.phase(), Phase::Idle);
     }
 
@@ -147,7 +166,10 @@ mod tests {
     fn a_second_recording_is_refused_while_one_is_running() {
         let recorder = Recorder::default();
         recorder.begin().unwrap();
-        assert_eq!(recorder.record(15, 64, 0.5), Err("이미 녹화하고 있습니다.".to_string()));
+        assert_eq!(
+            recorder.record(15, 64, 0.5),
+            Err("이미 녹화하고 있습니다.".to_string())
+        );
         assert_eq!(*recorder.phase(), Phase::Recording);
     }
 

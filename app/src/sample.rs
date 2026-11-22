@@ -12,15 +12,28 @@ pub fn encode(fps: u32, colors: usize, dither: f32) -> Result<Vec<u8>, String> {
     let fps = parse_fps(fps)?;
 
     let frame_count = fps.per_second() as usize * SECONDS;
-    let frames: Vec<Vec<Rgb>> = (0..frame_count).map(|number| frame(number, frame_count)).collect();
+    let frames: Vec<Vec<Rgb>> = (0..frame_count)
+        .map(|number| frame(number, frame_count))
+        .collect();
     let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
 
-    encode_gif(WIDTH as u16, HEIGHT as u16, &frames, fps, ManualSettings { colors, dither }).map_err(explain_encode)
+    encode_gif(
+        WIDTH as u16,
+        HEIGHT as u16,
+        &frames,
+        fps,
+        ManualSettings { colors, dither },
+    )
+    .map_err(explain_encode)
 }
 
 pub fn parse_fps(fps: u32) -> Result<GifFps, String> {
-    GifFps::try_from(fps)
-        .map_err(|unsupported| format!("지원하지 않는 fps입니다: {} (10, 15, 30 중에서 고르세요)", unsupported.0))
+    GifFps::try_from(fps).map_err(|unsupported| {
+        format!(
+            "지원하지 않는 fps입니다: {} (10, 15, 30 중에서 고르세요)",
+            unsupported.0
+        )
+    })
 }
 
 pub fn explain_encode(error: EncodeError) -> String {
@@ -71,17 +84,31 @@ mod tests {
     fn a_higher_frame_rate_gives_more_frames_and_a_bigger_file() {
         let slow = encode(10, 255, 1.0).unwrap();
         let fast = encode(30, 255, 1.0).unwrap();
-        assert!(fast.len() > slow.len(), "10 fps {} bytes, 30 fps {} bytes", slow.len(), fast.len());
+        assert!(
+            fast.len() > slow.len(),
+            "10 fps {} bytes, 30 fps {} bytes",
+            slow.len(),
+            fast.len()
+        );
     }
 
     #[test]
     fn an_unsupported_frame_rate_is_explained() {
-        assert_eq!(encode(60, 64, 0.5), Err("지원하지 않는 fps입니다: 60 (10, 15, 30 중에서 고르세요)".to_string()));
+        assert_eq!(
+            encode(60, 64, 0.5),
+            Err("지원하지 않는 fps입니다: 60 (10, 15, 30 중에서 고르세요)".to_string())
+        );
     }
 
     #[test]
     fn settings_out_of_range_are_explained() {
-        assert_eq!(encode(15, 1, 0.5), Err("색 수는 2~255 사이여야 합니다: 1".to_string()));
-        assert_eq!(encode(15, 64, 2.0), Err("디더링 강도는 0~1 사이여야 합니다: 2".to_string()));
+        assert_eq!(
+            encode(15, 1, 0.5),
+            Err("색 수는 2~255 사이여야 합니다: 1".to_string())
+        );
+        assert_eq!(
+            encode(15, 64, 2.0),
+            Err("디더링 강도는 0~1 사이여야 합니다: 2".to_string())
+        );
     }
 }

@@ -25,7 +25,10 @@ pub fn ordered_dither(
     strength: f32,
 ) -> Result<Vec<u8>, DitherError> {
     if width == 0 || !pixels.len().is_multiple_of(width) {
-        return Err(DitherError::WidthDoesNotFit { width, pixels: pixels.len() });
+        return Err(DitherError::WidthDoesNotFit {
+            width,
+            pixels: pixels.len(),
+        });
     }
 
     let reach = gap_between_palette_colors(palette) * strength;
@@ -45,7 +48,9 @@ fn position_threshold(x: usize, y: usize) -> f32 {
 fn gap_between_palette_colors(palette: &Palette) -> f32 {
     let colors = palette.colors();
     let distance = |a: Rgb, b: Rgb| {
-        let squared: f32 = (0..3).map(|channel| f32::from(a[channel].abs_diff(b[channel])).powi(2)).sum();
+        let squared: f32 = (0..3)
+            .map(|channel| f32::from(a[channel].abs_diff(b[channel])).powi(2))
+            .sum();
         squared.sqrt()
     };
     let gap_to_closest_neighbor = |index: usize| {
@@ -104,7 +109,10 @@ mod tests {
     fn zero_strength_is_plain_nearest_color() {
         let palette = four_grays();
         let pixels: Vec<Rgb> = (0..=255).map(gray).collect();
-        assert_eq!(ordered_dither(&palette, &pixels, 16, 0.0), Ok(palette.to_indices(&pixels)));
+        assert_eq!(
+            ordered_dither(&palette, &pixels, 16, 0.0),
+            Ok(palette.to_indices(&pixels))
+        );
     }
 
     #[test]
@@ -113,7 +121,10 @@ mod tests {
         let white = palette.nearest(gray(255));
         let indices = ordered_dither(&palette, &[gray(128); 64], 8, 1.0).unwrap();
         let whites = indices.iter().filter(|&&index| index == white).count();
-        assert!((30..=34).contains(&whites), "{whites} of 64 pixels are white");
+        assert!(
+            (30..=34).contains(&whites),
+            "{whites} of 64 pixels are white"
+        );
     }
 
     #[test]
@@ -122,14 +133,19 @@ mod tests {
         let white = palette.nearest(gray(255));
         let indices = ordered_dither(&palette, &[gray(64); 64], 8, 1.0).unwrap();
         let whites = indices.iter().filter(|&&index| index == white).count();
-        assert!((6..=18).contains(&whites), "{whites} of 64 pixels are white");
+        assert!(
+            (6..=18).contains(&whites),
+            "{whites} of 64 pixels are white"
+        );
     }
 
     #[test]
     fn a_ramp_seen_from_a_distance_is_much_closer_to_the_original() {
         let palette = four_grays();
         let width = 256;
-        let pixels: Vec<Rgb> = (0..width * 8).map(|index| gray((index % width) as u8)).collect();
+        let pixels: Vec<Rgb> = (0..width * 8)
+            .map(|index| gray((index % width) as u8))
+            .collect();
 
         let plain = palette.to_indices(&pixels);
         let dithered = ordered_dither(&palette, &pixels, width, 1.0).unwrap();
@@ -145,20 +161,29 @@ mod tests {
     #[test]
     fn pure_black_and_white_are_left_alone() {
         let palette = black_and_white();
-        let pixels: Vec<Rgb> = (0..64).map(|index| gray(if index % 3 == 0 { 255 } else { 0 })).collect();
-        assert_eq!(ordered_dither(&palette, &pixels, 8, 1.0), Ok(palette.to_indices(&pixels)));
+        let pixels: Vec<Rgb> = (0..64)
+            .map(|index| gray(if index % 3 == 0 { 255 } else { 0 }))
+            .collect();
+        assert_eq!(
+            ordered_dither(&palette, &pixels, 8, 1.0),
+            Ok(palette.to_indices(&pixels))
+        );
     }
 
     #[test]
     fn changing_one_pixel_changes_only_that_pixel() {
         let palette = four_grays();
-        let before: Vec<Rgb> = (0..32 * 32).map(|index| gray((index % 251) as u8)).collect();
+        let before: Vec<Rgb> = (0..32 * 32)
+            .map(|index| gray((index % 251) as u8))
+            .collect();
         let mut after = before.clone();
         after[500] = gray(255);
 
         let before = ordered_dither(&palette, &before, 32, 1.0).unwrap();
         let after = ordered_dither(&palette, &after, 32, 1.0).unwrap();
-        let changed: Vec<usize> = (0..before.len()).filter(|&index| before[index] != after[index]).collect();
+        let changed: Vec<usize> = (0..before.len())
+            .filter(|&index| before[index] != after[index])
+            .collect();
         assert!(changed.is_empty() || changed == [500], "{changed:?}");
     }
 
