@@ -1,4 +1,4 @@
-use crate::palette::Palette;
+use crate::palette::{NearestColor, Palette};
 use crate::writer::Rgb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,7 +19,7 @@ const BAYER: [[u8; BAYER_SIZE]; BAYER_SIZE] = [
 ];
 
 pub fn ordered_dither(
-    palette: &Palette,
+    nearest: &mut NearestColor,
     pixels: &[Rgb],
     width: usize,
     strength: f32,
@@ -28,10 +28,10 @@ pub fn ordered_dither(
         return Err(DitherError::WidthDoesNotFit { width, pixels: pixels.len() });
     }
 
-    let reach = gap_between_palette_colors(palette) * strength;
+    let reach = gap_between_palette_colors(nearest.palette()) * strength;
     let indices = pixels.iter().enumerate().map(|(index, &pixel)| {
         let nudge = position_threshold(index % width, index / width) * reach;
-        palette.nearest(pixel.map(|channel| (f32::from(channel) + nudge).clamp(0.0, 255.0) as u8))
+        nearest.of(pixel.map(|channel| (f32::from(channel) + nudge).clamp(0.0, 255.0) as u8))
     });
     Ok(indices.collect())
 }
@@ -104,14 +104,14 @@ mod tests {
     fn zero_strength_is_plain_nearest_color() {
         let palette = four_grays();
         let pixels: Vec<Rgb> = (0..=255).map(gray).collect();
-        assert_eq!(ordered_dither(&palette, &pixels, 16, 0.0), Ok(palette.to_indices(&pixels)));
+        assert_eq!(ordered_dither(&mut palette.lookup(), &pixels, 16, 0.0), Ok(palette.to_indices(&pixels)));
     }
 
     #[test]
     fn mid_gray_becomes_half_black_and_half_white() {
         let palette = black_and_white();
         let white = palette.nearest(gray(255));
-        let indices = ordered_dither(&palette, &[gray(128); 64], 8, 1.0).unwrap();
+        let indices = ordered_dither(&mut palette.lookup(), &[gray(128); 64], 8, 1.0).unwrap();
         let whites = indices.iter().filter(|&&index| index == white).count();
         assert!((30..=34).contains(&whites), "{whites} of 64 pixels are white");
     }
@@ -120,7 +120,7 @@ mod tests {
     fn a_darker_gray_gets_proportionally_fewer_white_pixels() {
         let palette = black_and_white();
         let white = palette.nearest(gray(255));
-        let indices = ordered_dither(&palette, &[gray(64); 64], 8, 1.0).unwrap();
+        let indices = ordered_dither(&mut palette.lookup(), &[gray(64); 64], 8, 1.0).unwrap();
         let whites = indices.iter().filter(|&&index| index == white).count();
         assert!((6..=18).contains(&whites), "{whites} of 64 pixels are white");
     }
@@ -132,7 +132,7 @@ mod tests {
         let pixels: Vec<Rgb> = (0..width * 8).map(|index| gray((index % width) as u8)).collect();
 
         let plain = palette.to_indices(&pixels);
-        let dithered = ordered_dither(&palette, &pixels, width, 1.0).unwrap();
+        let dithered = ordered_dither(&mut palette.lookup(), &pixels, width, 1.0).unwrap();
 
         let plain_error = block_error(&palette, &pixels, &plain, width);
         let dithered_error = block_error(&palette, &pixels, &dithered, width);
@@ -146,7 +146,7 @@ mod tests {
     fn pure_black_and_white_are_left_alone() {
         let palette = black_and_white();
         let pixels: Vec<Rgb> = (0..64).map(|index| gray(if index % 3 == 0 { 255 } else { 0 })).collect();
-        assert_eq!(ordered_dither(&palette, &pixels, 8, 1.0), Ok(palette.to_indices(&pixels)));
+        assert_eq!(ordered_dither(&mut palette.lookup(), &pixels, 8, 1.0), Ok(palette.to_indices(&pixels)));
     }
 
     #[test]
@@ -156,8 +156,8 @@ mod tests {
         let mut after = before.clone();
         after[500] = gray(255);
 
-        let before = ordered_dither(&palette, &before, 32, 1.0).unwrap();
-        let after = ordered_dither(&palette, &after, 32, 1.0).unwrap();
+        let before = ordered_dither(&mut palette.lookup(), &before, 32, 1.0).unwrap();
+        let after = ordered_dither(&mut palette.lookup(), &after, 32, 1.0).unwrap();
         let changed: Vec<usize> = (0..before.len()).filter(|&index| before[index] != after[index]).collect();
         assert!(changed.is_empty() || changed == [500], "{changed:?}");
     }
@@ -168,7 +168,7 @@ mod tests {
         let pixels = [gray(0); 10];
         for width in [0, 3, 11] {
             assert_eq!(
-                ordered_dither(&palette, &pixels, width, 1.0),
+                ordered_dither(&mut palette.lookup(), &pixels, width, 1.0),
                 Err(DitherError::WidthDoesNotFit { width, pixels: 10 })
             );
         }

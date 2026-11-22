@@ -57,10 +57,11 @@ pub fn encode_gif(
 
     let palette = Palette::from_frames(frames, settings.colors)
         .expect("the color limit is in range and the frames have pixels");
+    let mut nearest = palette.lookup();
     let indexed: Vec<Vec<u8>> = frames
         .iter()
         .map(|frame| {
-            ordered_dither(&palette, frame, usize::from(width), settings.dither)
+            ordered_dither(&mut nearest, frame, usize::from(width), settings.dither)
                 .expect("every frame is width x height pixels")
         })
         .collect();
@@ -166,7 +167,7 @@ mod tests {
 
         let palette = Palette::from_frames(&slices, 64).unwrap();
         let indexed: Vec<Vec<u8>> =
-            slices.iter().map(|frame| ordered_dither(&palette, frame, 48, 0.5).unwrap()).collect();
+            slices.iter().map(|frame| ordered_dither(&mut palette.lookup(), frame, 48, 0.5).unwrap()).collect();
         let indexed: Vec<&[u8]> = indexed.iter().map(Vec::as_slice).collect();
         let by_hand = write_gif(48, 32, palette.colors(), &indexed, GifFps::Fps15).unwrap();
 

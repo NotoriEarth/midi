@@ -14,7 +14,7 @@ pub enum PaletteError {
 type CountedColor = (Rgb, u64);
 
 impl Palette {
-    pub const MAX_COLORS: usize = 255;
+    pub const MAX_COLORS: usize = NOT_ASKED_YET as usize;
 
     pub fn from_frames(frames: &[&[Rgb]], max_colors: usize) -> Result<Palette, PaletteError> {
         if !(1..=Self::MAX_COLORS).contains(&max_colors) {
@@ -56,11 +56,39 @@ impl Palette {
             .collect()
     }
 
+    pub fn lookup(&self) -> NearestColor<'_> {
+        NearestColor { palette: self, answers: vec![NOT_ASKED_YET; EVERY_RGB_COLOR] }
+    }
+
     pub fn nearest(&self, pixel: Rgb) -> u8 {
         let index = (0..self.0.len())
             .min_by_key(|&index| squared_distance(self.0[index], pixel))
             .expect("a palette always has at least one color");
         index as u8
+    }
+}
+
+const EVERY_RGB_COLOR: usize = 1 << 24;
+const NOT_ASKED_YET: u8 = u8::MAX;
+
+#[derive(Debug, Clone)]
+pub struct NearestColor<'a> {
+    palette: &'a Palette,
+    answers: Vec<u8>,
+}
+
+impl NearestColor<'_> {
+    pub fn palette(&self) -> &Palette {
+        self.palette
+    }
+
+    pub fn of(&mut self, pixel: Rgb) -> u8 {
+        let [red, green, blue] = pixel.map(usize::from);
+        let slot = red << 16 | green << 8 | blue;
+        if self.answers[slot] == NOT_ASKED_YET {
+            self.answers[slot] = self.palette.nearest(pixel);
+        }
+        self.answers[slot]
     }
 }
 
@@ -198,6 +226,48 @@ mod tests {
         assert_ne!(black, white);
 
         assert_eq!(palette.to_indices(&[gray(10), gray(200), [120, 130, 140]]), [black, white, white]);
+    }
+
+    fn many_colors() -> Vec<Rgb> {
+        (0..5000u32).map(|n| [(n * 7) as u8, (n * 13) as u8, (n * 29) as u8]).collect()
+    }
+
+    #[test]
+    fn the_lookup_answers_exactly_like_searching_every_palette_color() {
+        let palette = Palette::from_frames(&[&many_colors()], Palette::MAX_COLORS).unwrap();
+        let mut lookup = palette.lookup();
+
+        let between_palette_colors = (0..4000u32).map(|n| [(n * 31) as u8, (n * 3) as u8, (n * 17) as u8]);
+        for color in many_colors().into_iter().chain(between_palette_colors) {
+            assert_eq!(lookup.of(color), palette.nearest(color), "{color:?}");
+        }
+    }
+
+    #[test]
+    fn a_color_asked_again_gets_the_same_answer() {
+        let palette = Palette::from_frames(&[&many_colors()], 64).unwrap();
+        let mut lookup = palette.lookup();
+
+        let first: Vec<u8> = many_colors().into_iter().map(|color| lookup.of(color)).collect();
+        let again: Vec<u8> = many_colors().into_iter().map(|color| lookup.of(color)).collect();
+
+        assert_eq!(again, first);
+        assert_eq!(first, palette.to_indices(&many_colors()));
+    }
+
+    #[test]
+    fn every_entry_of_a_full_palette_can_be_the_answer() {
+        let palette = Palette::from_frames(&[&many_colors()], Palette::MAX_COLORS).unwrap();
+        assert_eq!(palette.colors().len(), Palette::MAX_COLORS);
+        let mut lookup = palette.lookup();
+
+        for _ in 0..2 {
+            for (index, &color) in palette.colors().iter().enumerate() {
+                assert_eq!(usize::from(lookup.of(color)), usize::from(palette.nearest(color)), "entry {index}");
+            }
+        }
+        let answers: std::collections::HashSet<u8> = palette.colors().iter().map(|&color| lookup.of(color)).collect();
+        assert!(answers.contains(&254), "the last entry is never mistaken for an empty slot");
     }
 
     #[test]

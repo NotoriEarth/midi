@@ -47,7 +47,8 @@ fn main() {
         let steady: Vec<&[Rgb]> = steady.iter().map(Vec::as_slice).collect();
         let (palette, choosing) = timed(|| Palette::from_frames(&steady, level.colors).expect("frames with pixels"));
         let (indexed, dithering) = timed(|| -> Vec<Vec<u8>> {
-            steady.iter().map(|frame| ordered_dither(&palette, frame, width as usize, 1.0).expect("whole rows")).collect()
+            let mut nearest = palette.lookup();
+            steady.iter().map(|frame| ordered_dither(&mut nearest, frame, width as usize, 1.0).expect("whole rows")).collect()
         });
         let indexed: Vec<&[u8]> = indexed.iter().map(Vec::as_slice).collect();
         let (gif, writing) =
