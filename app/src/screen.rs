@@ -6,7 +6,7 @@ use gif_core::fit::{EncodeSettings, Encoded, Step, encode};
 use gif_core::resize::{OutputSize, ResizeError};
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
-use gif_win::{CaptureError, ScreenCapturer, Spool, free_disk_bytes, record_screen, select_region};
+use gif_win::{CaptureError, RecordingBorder, ScreenCapturer, Spool, free_disk_bytes, record_screen, select_region};
 
 use crate::sample::{explain_encode, parse_fps};
 
@@ -131,8 +131,10 @@ impl Recorder {
                 not_written.replace(Some(problem));
             }
         };
-        record_screen(&mut capturer, region, output_size, fps, limit.frames, keep_going, keep)
-            .map_err(explain_capture)?;
+        let border = RecordingBorder::show(region).ok();
+        let recorded = record_screen(&mut capturer, region, output_size, fps, limit.frames, keep_going, keep);
+        drop(border);
+        recorded.map_err(explain_capture)?;
         if let Some(problem) = not_written.into_inner() {
             return Err(explain_spool(problem));
         }

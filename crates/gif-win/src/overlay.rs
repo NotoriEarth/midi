@@ -219,7 +219,7 @@ fn paint(window: HWND, selection: &Selection) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::thread;
     use std::time::Duration;
@@ -279,7 +279,7 @@ mod tests {
         assert_eq!(region, None);
     }
 
-    fn white_patch(left: i32, top: i32, width: i32, height: i32) -> HWND {
+    pub(crate) fn white_patch(left: i32, top: i32, width: i32, height: i32) -> HWND {
         use windows::Win32::Graphics::Gdi::UpdateWindow;
         use windows::Win32::UI::WindowsAndMessaging::WS_EX_NOACTIVATE;
 

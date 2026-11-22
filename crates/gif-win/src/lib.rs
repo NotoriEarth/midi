@@ -1,5 +1,6 @@
 #![cfg(windows)]
 
+mod border;
 mod capture;
 mod clock;
 mod disk;
@@ -9,6 +10,7 @@ mod pixels;
 mod record;
 mod spool;
 
+pub use border::RecordingBorder;
 pub use capture::ScreenCapturer;
 pub use clock::local_time;
 pub use disk::free_disk_bytes;
