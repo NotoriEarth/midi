@@ -20,6 +20,7 @@ pub enum EncodeError {
     Dither(f32),
     Tolerance(u8),
     SizeLimit(usize),
+    Level(usize),
 }
 
 impl ManualSettings {

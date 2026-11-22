@@ -4,10 +4,11 @@ mod sample;
 mod save;
 mod screen;
 
-use gif_core::encode::ManualSettings;
-use gif_core::fit::{EncodeSettings, Fitted};
+use gif_core::fit::{BEST_LEVEL, EncodeSettings, LEVELS, Quality};
+use gif_core::resize::OutputSize;
 use gif_core::hotkey::Hotkey;
 use gif_core::session::ScreenRect;
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -18,16 +19,40 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use screen::Recorder;
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QualityChoice {
+    level: Option<usize>,
+    max_bytes: Option<usize>,
+    dither: f32,
+}
+
+impl From<QualityChoice> for EncodeSettings {
+    fn from(choice: QualityChoice) -> EncodeSettings {
+        let quality = match (choice.level, choice.max_bytes) {
+            (Some(level), _) => Quality::Level(level),
+            (None, Some(max_bytes)) => Quality::WithinBytes(max_bytes),
+            (None, None) => Quality::Level(BEST_LEVEL),
+        };
+        EncodeSettings { quality, dither: choice.dither }
+    }
+}
+
+#[tauri::command]
+fn quality_levels() -> Vec<(usize, u8)> {
+    LEVELS.iter().map(|level| (level.colors, level.tolerance)).collect()
+}
+
 #[tauri::command(async)]
-fn make_sample_gif(fps: u32, colors: usize, dither: f32) -> Result<Response, String> {
-    sample::encode(fps, colors, dither).map(Response::new)
+fn make_sample_gif(fps: u32, quality: QualityChoice) -> Result<Response, String> {
+    sample::encode(fps, quality.into()).map(Response::new)
 }
 
 const CANCELLED: Vec<u8> = Vec::new();
 const RECORDING_STARTED: &str = "recording-started";
 const BEGIN_SELECTION: &str = "begin-selection";
 const GIF_SAVED: &str = "gif-saved";
-const GIF_FITTED: &str = "gif-fitted";
+const GIF_ENCODED: &str = "gif-encoded";
 const SAVE_FOLDER: &str = "midi";
 
 #[derive(Default)]
@@ -90,11 +115,8 @@ fn begin_hotkey(begin: State<BeginHotkey>) -> Result<String, String> {
 #[serde(rename_all = "camelCase")]
 struct RecordSettings {
     fps: u32,
-    colors: usize,
-    dither: f32,
-    tolerance: u8,
-    scale: u32,
-    max_bytes: Option<usize>,
+    quality: QualityChoice,
+    fit_within: Option<(u32, u32)>,
 }
 
 #[tauri::command(async)]
@@ -107,18 +129,19 @@ fn record_screen_gif(
 ) -> Result<Response, String> {
     let _keys = KeysWhileRecording(&hotkeys);
     let _ = hotkeys.register(CANCEL_KEY, KeyCombo::ESCAPE);
+    let recorded_size = Cell::new((0, 0));
     let tell_the_page = |region: ScreenRect, output_size: (u32, u32)| {
+        recorded_size.set(output_size);
         let _ = hotkeys.register(STOP_KEY, KeyCombo::ENTER);
         let _ = window.emit(RECORDING_STARTED, ((region.width, region.height), output_size));
     };
-    let RecordSettings { fps, colors, dither, tolerance, scale, max_bytes } = settings;
-    let encode_settings = match max_bytes {
-        Some(max_bytes) => EncodeSettings::MaxSize { max_bytes, dither },
-        None => EncodeSettings::Manual(ManualSettings { colors, dither, tolerance }),
+    let size = match settings.fit_within {
+        Some((width, height)) => OutputSize::FitWithin { width, height },
+        None => OutputSize::Original,
     };
-    let encoded = recorder.record(fps, encode_settings, scale, tell_the_page)?;
-    if let Some(Fitted { level, fits }) = encoded.as_ref().and_then(|encoded| encoded.fitted) {
-        let _ = window.emit(GIF_FITTED, (level.scale_percent, level.colors, level.tolerance, fits));
+    let encoded = recorder.record(settings.fps, settings.quality.into(), size, tell_the_page)?;
+    if let Some(encoded) = &encoded {
+        let _ = window.emit(GIF_ENCODED, (encoded.level, encoded.within_limit, recorded_size.get()));
     }
     let gif = encoded.map(|encoded| encoded.gif);
     if let Some(gif) = &gif {
@@ -153,7 +176,7 @@ fn main() {
             app.manage(hotkeys);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![make_sample_gif, record_screen_gif, stop_recording, cancel_recording, begin_hotkey, show_saved_gif])
+        .invoke_handler(tauri::generate_handler![make_sample_gif, record_screen_gif, stop_recording, cancel_recording, begin_hotkey, show_saved_gif, quality_levels])
         .run(tauri::generate_context!())
         .expect("the app window can be created");
 }

@@ -1,22 +1,44 @@
 use crate::writer::Rgb;
 
-pub const MIN_SCALE_PERCENT: u32 = 10;
-pub const MAX_SCALE_PERCENT: u32 = 100;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeError {
-    ScalePercent(u32),
     PixelCount { expected: usize, actual: usize },
     EmptyTarget,
     LargerThanSource,
 }
 
-pub fn scaled_size(width: u32, height: u32, percent: u32) -> Result<(u32, u32), ResizeError> {
-    if !(MIN_SCALE_PERCENT..=MAX_SCALE_PERCENT).contains(&percent) {
-        return Err(ResizeError::ScalePercent(percent));
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputSize {
+    Original,
+    FitWithin { width: u32, height: u32 },
+}
+
+impl OutputSize {
+    pub fn check(self) -> Result<(), ResizeError> {
+        match self {
+            OutputSize::FitWithin { width, height } if width == 0 || height == 0 => Err(ResizeError::EmptyTarget),
+            _ => Ok(()),
+        }
     }
-    let scaled = |side: u32| ((u64::from(side) * u64::from(percent) / 100) as u32).max(1);
-    Ok((scaled(width), scaled(height)))
+
+    pub fn for_source(self, width: u32, height: u32) -> Result<(u32, u32), ResizeError> {
+        self.check()?;
+        let OutputSize::FitWithin { width: box_width, height: box_height } = self else {
+            return Ok((width, height));
+        };
+        if width <= box_width && height <= box_height {
+            return Ok((width, height));
+        }
+
+        let (wide, tall) = (u64::from(width), u64::from(height));
+        let (box_wide, box_tall) = (u64::from(box_width), u64::from(box_height));
+        let rounded = |side: u64, times: u64, over: u64| (((side * times + over / 2) / over) as u32).max(1);
+        if wide * box_tall >= tall * box_wide {
+            Ok((box_width, rounded(tall, box_wide, wide)))
+        } else {
+            Ok((rounded(wide, box_tall, tall), box_height))
+        }
+    }
 }
 
 pub fn downscale(pixels: &[Rgb], from: (u32, u32), to: (u32, u32)) -> Result<Vec<Rgb>, ResizeError> {
@@ -67,26 +89,48 @@ mod tests {
         [level, level, level]
     }
 
-    #[test]
-    fn full_scale_keeps_the_size() {
-        assert_eq!(scaled_size(1920, 1080, 100), Ok((1920, 1080)));
+    fn within(width: u32, height: u32) -> OutputSize {
+        OutputSize::FitWithin { width, height }
     }
 
     #[test]
-    fn half_scale_halves_both_sides() {
-        assert_eq!(scaled_size(1920, 1080, 50), Ok((960, 540)));
-        assert_eq!(scaled_size(480, 270, 25), Ok((120, 67)));
+    fn the_original_size_is_the_size_of_the_region() {
+        assert_eq!(OutputSize::Original.for_source(1920, 1080), Ok((1920, 1080)));
     }
 
     #[test]
-    fn a_tiny_region_never_shrinks_to_nothing() {
-        assert_eq!(scaled_size(16, 3, 10), Ok((1, 1)));
+    fn a_box_with_the_same_shape_is_filled_exactly() {
+        assert_eq!(within(480, 270).for_source(1920, 1080), Ok((480, 270)));
     }
 
     #[test]
-    fn a_scale_outside_ten_to_a_hundred_percent_is_rejected() {
-        assert_eq!(scaled_size(100, 100, 9), Err(ResizeError::ScalePercent(9)));
-        assert_eq!(scaled_size(100, 100, 101), Err(ResizeError::ScalePercent(101)));
+    fn a_region_wider_than_the_box_touches_its_left_and_right() {
+        assert_eq!(within(480, 270).for_source(1000, 250), Ok((480, 120)));
+    }
+
+    #[test]
+    fn a_region_taller_than_the_box_touches_its_top_and_bottom() {
+        assert_eq!(within(480, 270).for_source(800, 500), Ok((432, 270)));
+        assert_eq!(within(480, 270).for_source(500, 800), Ok((169, 270)));
+    }
+
+    #[test]
+    fn a_region_that_already_fits_is_not_enlarged() {
+        assert_eq!(within(480, 270).for_source(300, 200), Ok((300, 200)));
+        assert_eq!(within(480, 270).for_source(480, 100), Ok((480, 100)));
+    }
+
+    #[test]
+    fn a_thin_region_never_shrinks_to_nothing() {
+        assert_eq!(within(100, 100).for_source(1000, 2), Ok((100, 1)));
+        assert_eq!(within(100, 100).for_source(2, 1000), Ok((1, 100)));
+    }
+
+    #[test]
+    fn a_box_without_area_is_rejected() {
+        assert_eq!(within(0, 270).check(), Err(ResizeError::EmptyTarget));
+        assert_eq!(within(480, 0).for_source(800, 500), Err(ResizeError::EmptyTarget));
+        assert_eq!(OutputSize::Original.check(), Ok(()));
     }
 
     #[test]

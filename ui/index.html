@@ -11,7 +11,7 @@
       <h1>GIF 만들기</h1>
       <p class="hint">샘플 영상을 만들거나, 주 모니터에서 드래그한 영역을 녹화해 GIF로 만듭니다.</p>
 
-      <form id="settings">
+      <form id="settings" novalidate>
         <label>
           프레임 수(fps)
           <select id="fps">
@@ -20,41 +20,54 @@
             <option value="30" selected>30</option>
           </select>
         </label>
+
+        <fieldset>
+          <legend>크기</legend>
+          <select id="size-mode" aria-label="크기 정하는 방법">
+            <option value="original" selected>드래그한 영역 그대로</option>
+            <option value="fit">가로×세로 지정</option>
+          </select>
+          <div id="size-box" class="pair" hidden>
+            <input id="size-width" type="number" min="1" max="4096" value="480" aria-label="가로 픽셀" />
+            <span>×</span>
+            <input id="size-height" type="number" min="1" max="4096" value="270" aria-label="세로 픽셀" />
+          </div>
+          <small class="hint">
+            녹화에 적용됩니다. 비율을 유지한 채 지정한 크기 안에 들어가도록 줄이고, 영역이 더 작으면 키우지
+            않습니다.
+          </small>
+        </fieldset>
+
         <label>
-          색 수 <output id="colors-value">255</output>
-          <input id="colors" type="range" min="2" max="255" value="255" />
-        </label>
-        <label>
-          디더링 강도 <output id="dither-value">1</output>
-          <input id="dither" type="range" min="0" max="1" step="0.05" value="1" />
-        </label>
-        <label>
-          열화 정도 <output id="tolerance-value">0</output>
-          <input id="tolerance" type="range" min="0" max="32" value="0" />
-          <small class="hint">녹화에만 적용됩니다. 이 값 이하의 작은 색 변화는 안 바뀐 것으로 보고 용량을 줄입니다.</small>
-        </label>
-        <label>
-          녹화 해상도
-          <select id="scale">
-            <option value="100" selected>100% (그대로)</option>
-            <option value="75">75%</option>
-            <option value="50">50%</option>
-            <option value="33">33%</option>
-            <option value="25">25%</option>
+          화질 단계
+          <select id="level">
+            <option value="" selected>자동 (용량 목표가 없으면 1단계)</option>
           </select>
         </label>
-        <label>
-          용량 목표
-          <select id="max-size">
-            <option value="" selected>없음 (위 색 수와 열화 정도 그대로)</option>
+
+        <fieldset>
+          <legend>용량 목표</legend>
+          <select id="max-size" aria-label="용량 목표">
+            <option value="" selected>없음</option>
             <option value="1">1MB 이하</option>
             <option value="2">2MB 이하</option>
             <option value="5">5MB 이하</option>
             <option value="8">8MB 이하</option>
             <option value="10">10MB 이하</option>
+            <option value="custom">직접 입력</option>
           </select>
-          <small class="hint">녹화에만 적용됩니다. 목표를 고르면 색 수, 열화 정도, 크기를 자동으로 낮춰 맞춥니다.</small>
+          <div id="max-size-box" class="pair" hidden>
+            <input id="max-size-custom" type="number" min="0.01" step="0.01" value="3" aria-label="용량 목표(MB)" />
+            <span>MB 이하</span>
+          </div>
+          <small id="max-size-hint" class="hint"></small>
+        </fieldset>
+
+        <label>
+          디더링 강도 <output id="dither-value">1</output>
+          <input id="dither" type="range" min="0" max="1" step="0.05" value="1" />
         </label>
+
         <div class="actions">
           <button id="make" type="submit">샘플 만들기</button>
           <button id="record" type="button">녹화 시작</button>
@@ -64,7 +77,7 @@
 
       <p id="hotkey" class="hint"></p>
       <p id="status" role="status">설정을 고르고 버튼을 누르세요.</p>
-      <p id="fitted" class="hint" hidden></p>
+      <p id="encoded" class="hint" hidden></p>
       <p id="saved" hidden>
         <span id="saved-path"></span>
         <button id="show-saved" type="button">폴더에서 보기</button>

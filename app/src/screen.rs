@@ -2,7 +2,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use gif_core::GifFps;
 use gif_core::fit::{EncodeSettings, Encoded, encode};
-use gif_core::resize::{ResizeError, scaled_size};
+use gif_core::resize::{OutputSize, ResizeError};
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
 use gif_win::{CaptureError, ScreenCapturer, record_screen, select_region};
@@ -34,17 +34,17 @@ impl Recorder {
         &self,
         fps: u32,
         settings: EncodeSettings,
-        scale_percent: u32,
+        size: OutputSize,
         on_recording: impl FnOnce(ScreenRect, (u32, u32)),
     ) -> Result<Option<Encoded>, String> {
         let fps = parse_fps(fps)?;
         settings.check().map_err(explain_encode)?;
-        scaled_size(1, 1, scale_percent).map_err(explain_resize)?;
+        size.check().map_err(explain_resize)?;
 
         let _back_to_idle = self.begin()?;
         match select_region(PRIMARY).map_err(explain_capture)? {
             Some(region) => {
-                let output_size = scaled_size(region.width, region.height, scale_percent).map_err(explain_resize)?;
+                let output_size = size.for_source(region.width, region.height).map_err(explain_resize)?;
                 self.record_region(region, output_size, fps, settings, on_recording)
             }
             None => Ok(None),
@@ -135,7 +135,7 @@ fn max_frames(fps: GifFps, (width, height): (u32, u32)) -> u32 {
 
 fn explain_resize(error: ResizeError) -> String {
     match error {
-        ResizeError::ScalePercent(percent) => format!("해상도는 10~100% 사이여야 합니다: {percent}"),
+        ResizeError::EmptyTarget => "크기는 가로와 세로 모두 1 이상이어야 합니다.".to_string(),
         other => format!("크기를 줄이지 못했습니다: {other:?}"),
     }
 }
@@ -154,18 +154,18 @@ fn explain_capture(error: CaptureError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gif_core::encode::ManualSettings;
+    use gif_core::fit::Quality;
     use std::thread;
     use std::time::{Duration, Instant};
 
     static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
     const SMALL: ScreenRect = ScreenRect { monitor: PRIMARY, x: 0, y: 0, width: 160, height: 90 };
-    const MANUAL: ManualSettings = ManualSettings { colors: 64, dither: 0.5, tolerance: 0 };
-    const SETTINGS: EncodeSettings = EncodeSettings::Manual(MANUAL);
-    const TOO_FEW_COLORS: EncodeSettings = EncodeSettings::Manual(ManualSettings { colors: 1, ..MANUAL });
-    const TOO_TOLERANT: EncodeSettings = EncodeSettings::Manual(ManualSettings { tolerance: 40, ..MANUAL });
-    const NO_ROOM: EncodeSettings = EncodeSettings::MaxSize { max_bytes: 0, dither: 0.5 };
+    const SETTINGS: EncodeSettings = EncodeSettings { quality: Quality::Level(3), dither: 0.5 };
+    const NO_SUCH_LEVEL: EncodeSettings = EncodeSettings { quality: Quality::Level(9), ..SETTINGS };
+    const NO_ROOM: EncodeSettings = EncodeSettings { quality: Quality::WithinBytes(0), ..SETTINGS };
+    const ORIGINAL: OutputSize = OutputSize::Original;
+    const NO_WIDTH: OutputSize = OutputSize::FitWithin { width: 0, height: 270 };
 
     fn after(delay: Duration, action: impl FnOnce() + Send) -> impl FnOnce() + Send {
         move || {
@@ -178,17 +178,19 @@ mod tests {
     fn bad_settings_are_explained_before_anything_is_selected() {
         let recorder = Recorder::default();
         assert_eq!(
-            recorder.record(60, SETTINGS, 100, |_, _| {}),
+            recorder.record(60, SETTINGS, ORIGINAL, |_, _| {}),
             Err("지원하지 않는 fps입니다: 60 (10, 15, 30 중에서 고르세요)".to_string())
         );
-        assert_eq!(recorder.record(15, TOO_FEW_COLORS, 100, |_, _| {}), Err("색 수는 2~255 사이여야 합니다: 1".to_string()));
-        assert_eq!(recorder.record(15, SETTINGS, 5, |_, _| {}), Err("해상도는 10~100% 사이여야 합니다: 5".to_string()));
         assert_eq!(
-            recorder.record(15, TOO_TOLERANT, 100, |_, _| {}),
-            Err("열화 정도는 0~32 사이여야 합니다: 40".to_string())
+            recorder.record(15, NO_SUCH_LEVEL, ORIGINAL, |_, _| {}),
+            Err("화질 단계는 1~6 사이여야 합니다: 9".to_string())
         );
         assert_eq!(
-            recorder.record(15, NO_ROOM, 100, |_, _| {}),
+            recorder.record(15, SETTINGS, NO_WIDTH, |_, _| {}),
+            Err("크기는 가로와 세로 모두 1 이상이어야 합니다.".to_string())
+        );
+        assert_eq!(
+            recorder.record(15, NO_ROOM, ORIGINAL, |_, _| {}),
             Err("용량 목표는 1바이트 이상이어야 합니다: 0".to_string())
         );
         assert_eq!(*recorder.phase(), Phase::Idle);
@@ -211,7 +213,7 @@ mod tests {
     fn a_second_recording_is_refused_while_one_is_running() {
         let recorder = Recorder::default();
         let _session = recorder.begin().unwrap();
-        assert_eq!(recorder.record(15, SETTINGS, 100, |_, _| {}), Err("이미 녹화하고 있습니다.".to_string()));
+        assert_eq!(recorder.record(15, SETTINGS, ORIGINAL, |_, _| {}), Err("이미 녹화하고 있습니다.".to_string()));
         assert_eq!(*recorder.phase(), Phase::Selecting);
     }
 

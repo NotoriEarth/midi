@@ -64,7 +64,8 @@ output {
 }
 
 select,
-button {
+button,
+input[type="number"] {
   font: inherit;
   padding: 8px 10px;
   border-radius: 8px;
@@ -100,4 +101,31 @@ button:disabled {
 
 .actions button {
   flex: 1;
+}
+
+fieldset {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+legend {
+  padding: 0;
+  margin-bottom: 6px;
+}
+
+.pair {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pair[hidden] {
+  display: none;
+}
+
+.pair input {
+  width: 7em;
 }
