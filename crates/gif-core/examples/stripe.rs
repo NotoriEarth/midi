@@ -6,9 +6,7 @@ const STRIPE: usize = 20;
 const PALETTE: [Rgb; 4] = [[24, 24, 32], [255, 96, 64], [255, 208, 64], [64, 200, 255]];
 
 fn main() {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "stripe.gif".to_string());
+    let path = std::env::args().nth(1).unwrap_or_else(|| "stripe.gif".to_string());
     let frames: Vec<Vec<u8>> = (0..30).map(frame).collect();
     let frames: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
 

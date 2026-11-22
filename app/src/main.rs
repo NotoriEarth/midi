@@ -16,12 +16,7 @@ fn make_sample_gif(fps: u32, colors: usize, dither: f32) -> Result<Response, Str
 const CANCELLED: Vec<u8> = Vec::new();
 
 #[tauri::command(async)]
-fn record_screen_gif(
-    recorder: State<Recorder>,
-    fps: u32,
-    colors: usize,
-    dither: f32,
-) -> Result<Response, String> {
+fn record_screen_gif(recorder: State<Recorder>, fps: u32, colors: usize, dither: f32) -> Result<Response, String> {
     let gif = recorder.record(fps, colors, dither)?;
     Ok(Response::new(gif.unwrap_or(CANCELLED)))
 }
@@ -39,12 +34,7 @@ fn cancel_recording(recorder: State<Recorder>) {
 fn main() {
     tauri::Builder::default()
         .manage(Recorder::default())
-        .invoke_handler(tauri::generate_handler![
-            make_sample_gif,
-            record_screen_gif,
-            stop_recording,
-            cancel_recording
-        ])
+        .invoke_handler(tauri::generate_handler![make_sample_gif, record_screen_gif, stop_recording, cancel_recording])
         .run(tauri::generate_context!())
         .expect("the app window can be created");
 }

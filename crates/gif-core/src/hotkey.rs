@@ -89,11 +89,7 @@ impl FromStr for Hotkey {
         let (mut win, mut ctrl, mut alt, mut shift) = (false, false, false, false);
         let mut key = None;
 
-        for part in text
-            .split('+')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-        {
+        for part in text.split('+').map(str::trim).filter(|part| !part.is_empty()) {
             match part.to_ascii_lowercase().as_str() {
                 "win" => win = true,
                 "ctrl" => ctrl = true,
@@ -108,13 +104,7 @@ impl FromStr for Hotkey {
         if !(win || ctrl || alt || shift) {
             return Err(HotkeyError::MissingModifier);
         }
-        Ok(Hotkey {
-            win,
-            ctrl,
-            alt,
-            shift,
-            key,
-        })
+        Ok(Hotkey { win, ctrl, alt, shift, key })
     }
 }
 
@@ -134,19 +124,13 @@ mod tests {
     #[test]
     fn what_is_saved_reads_back_as_the_same_hotkey() {
         for text in ["Win+Shift+G", "Ctrl+Alt+F9", "Win+Ctrl+Alt+Shift+7"] {
-            assert_eq!(
-                parse(text).map(|hotkey| hotkey.to_string()),
-                Ok(text.to_string())
-            );
+            assert_eq!(parse(text).map(|hotkey| hotkey.to_string()), Ok(text.to_string()));
         }
     }
 
     #[test]
     fn case_spacing_and_modifier_order_do_not_matter() {
-        assert_eq!(
-            parse(" shift + WIN + g "),
-            Ok(Hotkey::DEFAULT_BEGIN_SELECTION)
-        );
+        assert_eq!(parse(" shift + WIN + g "), Ok(Hotkey::DEFAULT_BEGIN_SELECTION));
     }
 
     #[test]
@@ -167,26 +151,14 @@ mod tests {
 
     #[test]
     fn enter_and_escape_cannot_be_chosen() {
-        assert_eq!(
-            parse("Ctrl+Enter"),
-            Err(HotkeyError::UnknownKey("Enter".into()))
-        );
-        assert_eq!(
-            parse("Ctrl+Esc"),
-            Err(HotkeyError::UnknownKey("Esc".into()))
-        );
+        assert_eq!(parse("Ctrl+Enter"), Err(HotkeyError::UnknownKey("Enter".into())));
+        assert_eq!(parse("Ctrl+Esc"), Err(HotkeyError::UnknownKey("Esc".into())));
     }
 
     #[test]
     fn function_keys_stop_at_f24() {
-        assert_eq!(
-            parse("Ctrl+F24").map(|hotkey| hotkey.key),
-            Ok(Key::Function(24))
-        );
-        assert_eq!(
-            parse("Ctrl+F25"),
-            Err(HotkeyError::UnknownKey("F25".into()))
-        );
+        assert_eq!(parse("Ctrl+F24").map(|hotkey| hotkey.key), Ok(Key::Function(24)));
+        assert_eq!(parse("Ctrl+F25"), Err(HotkeyError::UnknownKey("F25".into())));
         assert_eq!(parse("Ctrl+F0"), Err(HotkeyError::UnknownKey("F0".into())));
     }
 }
