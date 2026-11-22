@@ -7,6 +7,7 @@ mod hotkeys;
 mod overlay;
 mod pixels;
 mod record;
+mod spool;
 
 pub use capture::ScreenCapturer;
 pub use clock::local_time;
@@ -14,6 +15,7 @@ pub use disk::free_disk_bytes;
 pub use hotkeys::{HotkeyTaken, Hotkeys, KeyCombo};
 pub use overlay::{cancel_selection, select_region};
 pub use record::record_screen;
+pub use spool::Spool;
 
 use gif_core::session::MonitorId;
 

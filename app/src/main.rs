@@ -5,7 +5,6 @@ mod sample;
 mod save;
 mod screen;
 mod settings;
-mod spool;
 
 use gif_core::fit::LEVELS;
 use gif_core::hotkey::Hotkey;

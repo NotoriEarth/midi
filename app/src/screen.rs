@@ -6,10 +6,9 @@ use gif_core::fit::{EncodeSettings, Encoded, Step, encode};
 use gif_core::resize::{OutputSize, ResizeError};
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
-use gif_win::{CaptureError, ScreenCapturer, free_disk_bytes, record_screen, select_region};
+use gif_win::{CaptureError, ScreenCapturer, Spool, free_disk_bytes, record_screen, select_region};
 
 use crate::sample::{explain_encode, parse_fps};
-use crate::spool::Spool;
 
 const PRIMARY: MonitorId = MonitorId(0);
 const MAX_SECONDS: u32 = 30;
@@ -117,8 +116,7 @@ impl Recorder {
         on_event: &mut dyn FnMut(RecordingEvent),
     ) -> Result<Option<Recorded>, String> {
         let mut capturer = ScreenCapturer::open(region.monitor).map_err(explain_capture)?;
-        let pixels_per_frame = (output_size.0 * output_size.1) as usize;
-        let mut spool = Spool::create_in(&std::env::temp_dir(), pixels_per_frame).map_err(explain_spool)?;
+        let mut spool = Spool::create_in(&std::env::temp_dir(), output_size).map_err(explain_spool)?;
         *self.phase() = Phase::Recording;
         let started = Started { region, output_size, limit_ms: limit.milliseconds(fps), limited_by: limit.by };
         on_event(RecordingEvent::Started(started));
@@ -205,7 +203,7 @@ fn recording_limit(
         return Ok(by_time);
     };
 
-    let bytes_per_frame = Spool::frame_bytes((width * height) as usize).max(1);
+    let bytes_per_frame = Spool::frame_bytes((width, height)).max(1);
     let frames_on_disk = free.saturating_sub(DISK_SPACE_LEFT_FREE) / bytes_per_frame;
     match frames_on_disk {
         0 => Err(NO_ROOM_ON_DISK.to_string()),
@@ -256,8 +254,15 @@ mod tests {
     const ORIGINAL: OutputSize = OutputSize::Original;
     const NO_WIDTH: OutputSize = OutputSize::FitWithin { width: 0, height: 270 };
 
-    fn after(delay: Duration, action: impl FnOnce() + Send) -> impl FnOnce() + Send {
+    fn once_recording<'a>(
+        recorder: &'a Recorder,
+        delay: Duration,
+        action: impl FnOnce() + Send + 'a,
+    ) -> impl FnOnce() + Send + 'a {
         move || {
+            while *recorder.phase() != Phase::Recording {
+                thread::sleep(Duration::from_millis(5));
+            }
             thread::sleep(delay);
             action();
         }
@@ -394,7 +399,7 @@ mod tests {
         let mut told = Vec::new();
         let started = Instant::now();
         let gif = thread::scope(|scope| {
-            scope.spawn(after(Duration::from_millis(600), || recorder.stop()));
+            scope.spawn(once_recording(&recorder, Duration::from_millis(600), || recorder.stop()));
             recorder.record_region(SMALL, (80, 45), GifFps::Fps10, LONG, SETTINGS, &mut |event| told.push(event))
         });
         let took = started.elapsed();
@@ -422,7 +427,7 @@ mod tests {
         let recorder = Recorder::default();
         let _session = recorder.begin().unwrap();
         let gif = thread::scope(|scope| {
-            scope.spawn(after(Duration::from_millis(300), || recorder.cancel()));
+            scope.spawn(once_recording(&recorder, Duration::from_millis(300), || recorder.cancel()));
             recorder.record_region(SMALL, (160, 90), GifFps::Fps10, LONG, SETTINGS, &mut |_| {})
         });
         assert_eq!(gif, Ok(None));
