@@ -77,11 +77,17 @@ record.addEventListener("click", async () => {
 listen("recording-started", ({ payload: [width, height] }) => {
   record.disabled = false;
   showRecording(true);
-  status.textContent = `${width}×${height} 녹화하는 중… [끝]을 누르면 GIF로 만듭니다.`;
+  status.textContent = `${width}×${height} 녹화하는 중… Enter나 [끝]으로 마치고, Esc나 [✕]로 취소합니다.`;
 });
 
 cancel.addEventListener("click", () => invoke("cancel_recording"));
 
-window.addEventListener("keydown", (event) => {
-  if (recording && event.key === "Escape") invoke("cancel_recording");
+listen("begin-selection", () => {
+  if (!recording && !record.disabled) record.click();
 });
+
+const hotkey = document.querySelector("#hotkey");
+invoke("begin_hotkey").then(
+  (keys) => (hotkey.textContent = `${keys}: 영역 선택 시작 · Enter: 녹화 끝 · Esc: 취소`),
+  (problem) => (hotkey.textContent = problem),
+);

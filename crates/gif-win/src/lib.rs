@@ -1,12 +1,14 @@
 #![cfg(windows)]
 
 mod capture;
+mod hotkeys;
 mod overlay;
 mod pixels;
 mod record;
 
 pub use capture::ScreenCapturer;
-pub use overlay::select_region;
+pub use hotkeys::{HotkeyTaken, Hotkeys, KeyCombo};
+pub use overlay::{cancel_selection, select_region};
 pub use record::record_screen;
 
 use gif_core::session::MonitorId;

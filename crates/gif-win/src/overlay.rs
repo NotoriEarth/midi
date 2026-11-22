@@ -12,7 +12,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, IDC_CROSS, LWA_ALPHA, LWA_COLORKEY,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW, PostMessageW, WM_CLOSE, IDC_CROSS, LWA_ALPHA, LWA_COLORKEY,
     LoadCursorW, MSG, RegisterClassExW, SW_SHOW, SetCursor, SetForegroundWindow, SetLayeredWindowAttributes,
     ShowWindow, TranslateMessage, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
     WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
@@ -49,6 +49,12 @@ pub fn select_region(monitor: MonitorId) -> Result<Option<ScreenRect>, CaptureEr
     let selected = select_in_physical_pixels(monitor);
     unsafe { SetThreadDpiAwarenessContext(earlier_awareness) };
     selected
+}
+
+pub fn cancel_selection() {
+    if let Ok(window) = unsafe { FindWindowW(CLASS_NAME, None) } {
+        let _ = unsafe { PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+    }
 }
 
 fn select_in_physical_pixels(monitor: MonitorId) -> Result<Option<ScreenRect>, CaptureError> {
@@ -163,7 +169,7 @@ unsafe extern "system" fn window_procedure(window: HWND, message: u32, wparam: W
                 let region = drag_region(selection.monitor, selection.monitor_size, from, pointer_position(lparam));
                 selection.outcome = region.map(Outcome::Selected);
             }
-            WM_RBUTTONDOWN => selection.outcome = Some(Outcome::Cancelled),
+            WM_RBUTTONDOWN | WM_CLOSE => selection.outcome = Some(Outcome::Cancelled),
             WM_KEYDOWN if wparam.0 == usize::from(VK_ESCAPE.0) => selection.outcome = Some(Outcome::Cancelled),
             WM_PAINT => {
                 paint(window, selection);
@@ -217,7 +223,6 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::Duration;
-    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
 
     use crate::desktop::{ONE_AT_A_TIME, PRIMARY};
 
@@ -294,6 +299,21 @@ mod tests {
         let later = brightness(capturer.capture(was_dimmed).unwrap());
 
         assert!(at_once * 10 >= later * 9, "at once {at_once}, later {later}");
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn the_selection_can_be_cancelled_from_another_thread() {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let canceller = thread::spawn(|| {
+            thread::sleep(Duration::from_millis(400));
+            cancel_selection();
+        });
+
+        let region = select_region(PRIMARY).unwrap();
+        canceller.join().unwrap();
+
+        assert_eq!(region, None);
     }
 
     #[test]
