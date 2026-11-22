@@ -15,7 +15,8 @@ pub fn record_screen(
     fps: GifFps,
     max_frames: u32,
     keep_going: impl FnMut() -> bool,
-) -> Result<Vec<Vec<Rgb>>, CaptureError> {
+    keep: impl FnMut(Vec<Rgb>),
+) -> Result<(), CaptureError> {
     let started = Instant::now();
     let sleep_until = |due: Duration| std::thread::sleep((started + due).saturating_duration_since(Instant::now()));
     let grab = || {
@@ -23,7 +24,7 @@ pub fn record_screen(
         downscale(&pixels, (region.width, region.height), output_size)
             .map_err(|error| CaptureError::System(format!("the frame could not be resized: {error:?}")))
     };
-    record_frames(fps, max_frames, grab, sleep_until, keep_going)
+    record_frames(fps, max_frames, grab, sleep_until, keep_going, keep)
 }
 
 fn record_frames<Frame, Error>(
@@ -32,16 +33,16 @@ fn record_frames<Frame, Error>(
     mut grab: impl FnMut() -> Result<Frame, Error>,
     mut wait_until: impl FnMut(Duration),
     mut keep_going: impl FnMut() -> bool,
-) -> Result<Vec<Frame>, Error> {
-    let mut frames = Vec::new();
+    mut keep: impl FnMut(Frame),
+) -> Result<(), Error> {
     for index in 0..max_frames {
         wait_until(frame_due(fps, index));
         if !keep_going() {
             break;
         }
-        frames.push(grab()?);
+        keep(grab()?);
     }
-    Ok(frames)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -55,6 +56,31 @@ mod tests {
         Grab(u32),
     }
 
+    fn kept<Frame, Error>(
+        fps: GifFps,
+        max_frames: u32,
+        grab: impl FnMut() -> Result<Frame, Error>,
+        wait_until: impl FnMut(Duration),
+        keep_going: impl FnMut() -> bool,
+    ) -> Result<Vec<Frame>, Error> {
+        let mut frames = Vec::new();
+        record_frames(fps, max_frames, grab, wait_until, keep_going, |frame| frames.push(frame)).map(|()| frames)
+    }
+
+    #[test]
+    fn frames_grabbed_before_a_failure_were_already_handed_over() {
+        let mut grabs = 0;
+        let grab = || {
+            grabs += 1;
+            if grabs == 3 { Err("screen went away") } else { Ok(grabs) }
+        };
+        let mut handed_over = Vec::new();
+
+        let ended = record_frames(GifFps::Fps30, 5, grab, |_| {}, || true, |frame| handed_over.push(frame));
+
+        assert_eq!((ended, handed_over), (Err("screen went away"), vec![1, 2]));
+    }
+
     fn ms(milliseconds: u64) -> Duration {
         Duration::from_millis(milliseconds)
     }
@@ -66,7 +92,7 @@ mod tests {
             next += 1;
             Ok::<u32, ()>(next)
         };
-        assert_eq!(record_frames(GifFps::Fps10, 3, grab, |_| {}, || true), Ok(vec![1, 2, 3]));
+        assert_eq!(kept(GifFps::Fps10, 3, grab, |_| {}, || true), Ok(vec![1, 2, 3]));
     }
 
     #[test]
@@ -80,7 +106,7 @@ mod tests {
         };
         let wait_until = |due| steps.borrow_mut().push(Step::WaitUntil(due));
 
-        record_frames(GifFps::Fps10, 3, grab, wait_until, || true).unwrap();
+        kept(GifFps::Fps10, 3, grab, wait_until, || true).unwrap();
 
         let expected = vec![
             Step::WaitUntil(ms(0)),
@@ -100,7 +126,7 @@ mod tests {
             grabs += 1;
             if grabs == 2 { Err("screen went away") } else { Ok(grabs) }
         };
-        assert_eq!(record_frames(GifFps::Fps30, 5, grab, |_| {}, || true), Err("screen went away"));
+        assert_eq!(kept(GifFps::Fps30, 5, grab, |_| {}, || true), Err("screen went away"));
         assert_eq!(grabs, 2);
     }
 
@@ -116,7 +142,7 @@ mod tests {
             asked += 1;
             asked <= 2
         };
-        assert_eq!(record_frames(GifFps::Fps10, 100, grab, |_| {}, keep_going), Ok(vec![1, 2]));
+        assert_eq!(kept(GifFps::Fps10, 100, grab, |_| {}, keep_going), Ok(vec![1, 2]));
     }
 
     #[test]
@@ -129,7 +155,7 @@ mod tests {
         };
         let wait_until = |due: Duration| stopped.set(due >= ms(100));
 
-        let frames = record_frames(GifFps::Fps10, 100, grab, wait_until, || !stopped.get());
+        let frames = kept(GifFps::Fps10, 100, grab, wait_until, || !stopped.get());
 
         assert_eq!(frames, Ok(vec![1]));
     }
@@ -137,13 +163,13 @@ mod tests {
     #[test]
     fn a_stop_before_the_first_frame_gives_no_frames() {
         let grab = || -> Result<u32, ()> { panic!("nothing should be grabbed") };
-        assert_eq!(record_frames(GifFps::Fps10, 100, grab, |_| {}, || false), Ok(vec![]));
+        assert_eq!(kept(GifFps::Fps10, 100, grab, |_| {}, || false), Ok(vec![]));
     }
 
     #[test]
     fn no_frames_asked_means_nothing_is_grabbed() {
         let grab = || -> Result<u32, ()> { panic!("nothing should be grabbed") };
-        assert_eq!(record_frames(GifFps::Fps30, 0, grab, |_| {}, || true), Ok(vec![]));
+        assert_eq!(kept(GifFps::Fps30, 0, grab, |_| {}, || true), Ok(vec![]));
     }
 
     #[test]
@@ -153,7 +179,8 @@ mod tests {
         let region = ScreenRect { monitor: crate::desktop::PRIMARY, x: 0, y: 0, width: 64, height: 48 };
 
         let started = Instant::now();
-        let frames = record_screen(&mut capturer, region, (32, 24), GifFps::Fps10, 6, || true).unwrap();
+        let mut frames = Vec::new();
+        record_screen(&mut capturer, region, (32, 24), GifFps::Fps10, 6, || true, |frame| frames.push(frame)).unwrap();
         let took = started.elapsed();
 
         assert_eq!(frames.len(), 6);

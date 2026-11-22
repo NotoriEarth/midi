@@ -37,8 +37,8 @@ function seconds(milliseconds) {
 function whyItEnded() {
   return limit.by === "time"
     ? `최대 길이 ${seconds(limit.milliseconds)}에 닿아 녹화를 끝냈습니다.`
-    : `이 크기와 fps에서는 메모리 한도 때문에 ${seconds(limit.milliseconds)}까지만 녹화할 수 있어 거기서 끝냈습니다. ` +
-        "크기를 줄이거나 fps를 낮추면 더 길게 녹화할 수 있습니다.";
+    : `디스크 여유 공간이 부족해 이 크기와 fps에서는 ${seconds(limit.milliseconds)}까지만 녹화할 수 있어 거기서 끝냈습니다. ` +
+        "디스크를 비우거나, 크기를 줄이거나, fps를 낮추면 더 길게 녹화할 수 있습니다.";
 }
 
 function describeLevel(number) {
@@ -178,7 +178,7 @@ listen("recording-started", ({ payload: [[width, height], [outWidth, outHeight],
       ? `${width}×${height}`
       : `${width}×${height} 영역을 ${outWidth}×${outHeight} 크기로`;
   limit = { milliseconds, by };
-  const most = by === "memory" ? ` (이 크기와 fps에서는 최대 ${seconds(milliseconds)})` : "";
+  const most = by === "disk" ? ` (디스크 여유 공간 때문에 최대 ${seconds(milliseconds)})` : "";
   const started = performance.now();
   const showTimeLeft = () => {
     const left = milliseconds - (performance.now() - started);

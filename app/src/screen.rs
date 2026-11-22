@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use gif_core::GifFps;
@@ -5,13 +6,14 @@ use gif_core::fit::{EncodeSettings, Encoded, Step, encode};
 use gif_core::resize::{OutputSize, ResizeError};
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
-use gif_win::{CaptureError, ScreenCapturer, record_screen, select_region};
+use gif_win::{CaptureError, ScreenCapturer, free_disk_bytes, record_screen, select_region};
 
 use crate::sample::{explain_encode, parse_fps};
+use crate::spool::Spool;
 
 const PRIMARY: MonitorId = MonitorId(0);
 const MAX_SECONDS: u32 = 30;
-const MAX_FRAME_BYTES: u64 = 1 << 30;
+const DISK_SPACE_LEFT_FREE: u64 = 1 << 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Phase {
@@ -28,7 +30,7 @@ enum Phase {
 #[serde(rename_all = "lowercase")]
 pub enum LimitedBy {
     Time,
-    Memory,
+    Disk,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,7 +92,7 @@ impl Recorder {
         match select_region(PRIMARY).map_err(explain_capture)? {
             Some(region) => {
                 let output_size = size.for_source(region.width, region.height).map_err(explain_resize)?;
-                let limit = recording_limit(fps, output_size);
+                let limit = recording_limit(fps, output_size, free_disk_bytes(&std::env::temp_dir()))?;
                 self.record_region(region, output_size, fps, limit, settings, &mut on_event)
             }
             None => Ok(None),
@@ -115,21 +117,31 @@ impl Recorder {
         on_event: &mut dyn FnMut(RecordingEvent),
     ) -> Result<Option<Recorded>, String> {
         let mut capturer = ScreenCapturer::open(region.monitor).map_err(explain_capture)?;
+        let pixels_per_frame = (output_size.0 * output_size.1) as usize;
+        let mut spool = Spool::create_in(&std::env::temp_dir(), pixels_per_frame).map_err(explain_spool)?;
         *self.phase() = Phase::Recording;
         let started = Started { region, output_size, limit_ms: limit.milliseconds(fps), limited_by: limit.by };
         on_event(RecordingEvent::Started(started));
 
-        let keep_going = || *self.phase() == Phase::Recording;
-        let frames =
-            record_screen(&mut capturer, region, output_size, fps, limit.frames, keep_going).map_err(explain_capture)?;
+        let not_written = RefCell::new(None);
+        let keep_going = || not_written.borrow().is_none() && *self.phase() == Phase::Recording;
+        let keep = |frame: Vec<Rgb>| {
+            if let Err(problem) = spool.push(&frame) {
+                not_written.replace(Some(problem));
+            }
+        };
+        record_screen(&mut capturer, region, output_size, fps, limit.frames, keep_going, keep)
+            .map_err(explain_capture)?;
+        if let Some(problem) = not_written.into_inner() {
+            return Err(explain_spool(problem));
+        }
 
         let Some(ending) = self.encode_unless_cancelled() else {
             return Ok(None);
         };
-        let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
         let mut on_step = |step| on_event(RecordingEvent::Encoding(step));
         let (width, height) = (output_size.0 as u16, output_size.1 as u16);
-        let encoded = encode(width, height, &mut &frames[..], fps, settings, &mut on_step).map_err(explain_encode)?;
+        let encoded = encode(width, height, &mut spool, fps, settings, &mut on_step).map_err(explain_encode)?;
         Ok(Some(Recorded { encoded, ended_at_limit: ending == Ending::AtLimit }))
     }
 
@@ -179,15 +191,31 @@ impl std::fmt::Debug for Recorder {
     }
 }
 
-fn recording_limit(fps: GifFps, (width, height): (u32, u32)) -> RecordingLimit {
-    let bytes_per_frame = u64::from(width) * u64::from(height) * size_of::<Rgb>() as u64;
-    let frames_in_memory = (MAX_FRAME_BYTES / bytes_per_frame.max(1)).max(1);
+const NO_ROOM_ON_DISK: &str =
+    "임시 폴더가 있는 디스크에 여유 공간이 부족해서 녹화할 수 없습니다. 공간을 비우거나 크기를 줄이세요.";
+
+fn recording_limit(
+    fps: GifFps,
+    (width, height): (u32, u32),
+    free_disk_bytes: Option<u64>,
+) -> Result<RecordingLimit, String> {
     let frames_in_time = u64::from(fps.per_second() * MAX_SECONDS);
-    if frames_in_memory < frames_in_time {
-        RecordingLimit { frames: frames_in_memory as u32, by: LimitedBy::Memory }
-    } else {
-        RecordingLimit { frames: frames_in_time as u32, by: LimitedBy::Time }
+    let by_time = RecordingLimit { frames: frames_in_time as u32, by: LimitedBy::Time };
+    let Some(free) = free_disk_bytes else {
+        return Ok(by_time);
+    };
+
+    let bytes_per_frame = Spool::frame_bytes((width * height) as usize).max(1);
+    let frames_on_disk = free.saturating_sub(DISK_SPACE_LEFT_FREE) / bytes_per_frame;
+    match frames_on_disk {
+        0 => Err(NO_ROOM_ON_DISK.to_string()),
+        fewer if fewer < frames_in_time => Ok(RecordingLimit { frames: fewer as u32, by: LimitedBy::Disk }),
+        _ => Ok(by_time),
     }
+}
+
+fn explain_spool(problem: std::io::Error) -> String {
+    format!("녹화한 화면을 임시 파일에 쓰지 못했습니다: {problem}")
 }
 
 fn explain_resize(error: ResizeError) -> String {
@@ -222,6 +250,8 @@ mod tests {
     const NO_SUCH_LEVEL: EncodeSettings = EncodeSettings { quality: Quality::Level(9), ..SETTINGS };
     const NO_ROOM: EncodeSettings =
         EncodeSettings { quality: Quality::WithinBytes { max_bytes: 0, adjust: Adjust::Level }, ..SETTINGS };
+    const GIGABYTE: u64 = 1 << 30;
+    const PLENTY: Option<u64> = Some(1 << 40);
     const LONG: RecordingLimit = RecordingLimit { frames: 300, by: LimitedBy::Time };
     const ORIGINAL: OutputSize = OutputSize::Original;
     const NO_WIDTH: OutputSize = OutputSize::FitWithin { width: 0, height: 270 };
@@ -312,24 +342,47 @@ mod tests {
     #[test]
     fn a_small_region_may_record_for_the_full_thirty_seconds() {
         let by = LimitedBy::Time;
-        assert_eq!(recording_limit(GifFps::Fps30, (480, 270)), RecordingLimit { frames: 900, by });
-        assert_eq!(recording_limit(GifFps::Fps10, (480, 270)), RecordingLimit { frames: 300, by });
+        assert_eq!(recording_limit(GifFps::Fps30, (480, 270), PLENTY), Ok(RecordingLimit { frames: 900, by }));
+        assert_eq!(recording_limit(GifFps::Fps10, (480, 270), PLENTY), Ok(RecordingLimit { frames: 300, by }));
         assert_eq!(RecordingLimit { frames: 900, by }.milliseconds(GifFps::Fps30), 30_000);
     }
 
     #[test]
-    fn a_large_region_stops_earlier_so_its_frames_fit_in_a_gigabyte() {
-        let limit = recording_limit(GifFps::Fps30, (2560, 1440));
-        assert_eq!(limit, RecordingLimit { frames: 97, by: LimitedBy::Memory });
-        assert!(u64::from(limit.frames) * 2560 * 1440 * 3 <= MAX_FRAME_BYTES);
+    fn a_whole_screen_may_record_for_thirty_seconds_too_when_the_disk_has_room() {
+        let limit = recording_limit(GifFps::Fps30, (2560, 1440), PLENTY);
+        assert_eq!(limit, Ok(RecordingLimit { frames: 900, by: LimitedBy::Time }));
+    }
+
+    #[test]
+    fn a_disk_whose_free_space_is_unknown_does_not_shorten_the_recording() {
+        let limit = recording_limit(GifFps::Fps30, (2560, 1440), None);
+        assert_eq!(limit, Ok(RecordingLimit { frames: 900, by: LimitedBy::Time }));
+    }
+
+    #[test]
+    fn a_nearly_full_disk_stops_the_recording_earlier_and_leaves_a_gigabyte_free() {
+        let frame_bytes = 2560 * 1440 * 3;
+        let room_for_97_frames = Some(GIGABYTE + 97 * frame_bytes + frame_bytes / 2);
+
+        let limit = recording_limit(GifFps::Fps30, (2560, 1440), room_for_97_frames).unwrap();
+
+        assert_eq!(limit, RecordingLimit { frames: 97, by: LimitedBy::Disk });
         assert_eq!(limit.milliseconds(GifFps::Fps30), 3233);
     }
 
     #[test]
-    fn a_region_whose_frames_fit_exactly_is_limited_by_time() {
-        let thirty_seconds_fill_a_gigabyte = (1 << 15, (1 << 15) / (3 * 300));
-        let limit = recording_limit(GifFps::Fps10, thirty_seconds_fill_a_gigabyte);
-        assert_eq!(limit, RecordingLimit { frames: 300, by: LimitedBy::Time });
+    fn room_for_exactly_thirty_seconds_is_limited_by_time() {
+        let frame_bytes = 480 * 270 * 3;
+        let limit = recording_limit(GifFps::Fps10, (480, 270), Some(GIGABYTE + 300 * frame_bytes));
+        assert_eq!(limit, Ok(RecordingLimit { frames: 300, by: LimitedBy::Time }));
+    }
+
+    #[test]
+    fn a_disk_without_room_for_one_frame_refuses_to_record_and_says_why() {
+        let frame_bytes = 480 * 270 * 3;
+        for free in [0, GIGABYTE, GIGABYTE + frame_bytes - 1] {
+            assert_eq!(recording_limit(GifFps::Fps10, (480, 270), Some(free)), Err(NO_ROOM_ON_DISK.to_string()));
+        }
     }
 
     #[test]
@@ -381,7 +434,7 @@ mod tests {
         let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
         let recorder = Recorder::default();
         let _session = recorder.begin().unwrap();
-        let three_frames = RecordingLimit { frames: 3, by: LimitedBy::Memory };
+        let three_frames = RecordingLimit { frames: 3, by: LimitedBy::Disk };
         let mut told = Vec::new();
 
         let recorded = recorder
@@ -393,6 +446,6 @@ mod tests {
         let RecordingEvent::Started(started) = told[0] else {
             panic!("the first thing told is that recording started: {told:?}");
         };
-        assert_eq!((started.limit_ms, started.limited_by), (300, LimitedBy::Memory));
+        assert_eq!((started.limit_ms, started.limited_by), (300, LimitedBy::Disk));
     }
 }
