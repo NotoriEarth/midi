@@ -1,7 +1,7 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use gif_core::GifFps;
-use gif_core::encode::{ManualSettings, encode_gif};
+use gif_core::fit::{EncodeSettings, Encoded, encode};
 use gif_core::resize::{ResizeError, scaled_size};
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
@@ -33,10 +33,10 @@ impl Recorder {
     pub fn record(
         &self,
         fps: u32,
-        settings: ManualSettings,
+        settings: EncodeSettings,
         scale_percent: u32,
         on_recording: impl FnOnce(ScreenRect, (u32, u32)),
-    ) -> Result<Option<Vec<u8>>, String> {
+    ) -> Result<Option<Encoded>, String> {
         let fps = parse_fps(fps)?;
         settings.check().map_err(explain_encode)?;
         scaled_size(1, 1, scale_percent).map_err(explain_resize)?;
@@ -64,9 +64,9 @@ impl Recorder {
         region: ScreenRect,
         output_size: (u32, u32),
         fps: GifFps,
-        settings: ManualSettings,
+        settings: EncodeSettings,
         on_recording: impl FnOnce(ScreenRect, (u32, u32)),
-    ) -> Result<Option<Vec<u8>>, String> {
+    ) -> Result<Option<Encoded>, String> {
         let mut capturer = ScreenCapturer::open(region.monitor).map_err(explain_capture)?;
         *self.phase() = Phase::Recording;
         on_recording(region, output_size);
@@ -79,9 +79,7 @@ impl Recorder {
             return Ok(None);
         }
         let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        encode_gif(output_size.0 as u16, output_size.1 as u16, &frames, fps, settings)
-            .map(Some)
-            .map_err(explain_encode)
+        encode(output_size.0 as u16, output_size.1 as u16, &frames, fps, settings).map(Some).map_err(explain_encode)
     }
 
     fn phase(&self) -> MutexGuard<'_, Phase> {
@@ -156,15 +154,18 @@ fn explain_capture(error: CaptureError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gif_core::encode::ManualSettings;
     use std::thread;
     use std::time::{Duration, Instant};
 
     static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
     const SMALL: ScreenRect = ScreenRect { monitor: PRIMARY, x: 0, y: 0, width: 160, height: 90 };
-    const SETTINGS: ManualSettings = ManualSettings { colors: 64, dither: 0.5, tolerance: 0 };
-    const TOO_FEW_COLORS: ManualSettings = ManualSettings { colors: 1, ..SETTINGS };
-    const TOO_TOLERANT: ManualSettings = ManualSettings { tolerance: 40, ..SETTINGS };
+    const MANUAL: ManualSettings = ManualSettings { colors: 64, dither: 0.5, tolerance: 0 };
+    const SETTINGS: EncodeSettings = EncodeSettings::Manual(MANUAL);
+    const TOO_FEW_COLORS: EncodeSettings = EncodeSettings::Manual(ManualSettings { colors: 1, ..MANUAL });
+    const TOO_TOLERANT: EncodeSettings = EncodeSettings::Manual(ManualSettings { tolerance: 40, ..MANUAL });
+    const NO_ROOM: EncodeSettings = EncodeSettings::MaxSize { max_bytes: 0, dither: 0.5 };
 
     fn after(delay: Duration, action: impl FnOnce() + Send) -> impl FnOnce() + Send {
         move || {
@@ -185,6 +186,10 @@ mod tests {
         assert_eq!(
             recorder.record(15, TOO_TOLERANT, 100, |_, _| {}),
             Err("열화 정도는 0~32 사이여야 합니다: 40".to_string())
+        );
+        assert_eq!(
+            recorder.record(15, NO_ROOM, 100, |_, _| {}),
+            Err("용량 목표는 1바이트 이상이어야 합니다: 0".to_string())
         );
         assert_eq!(*recorder.phase(), Phase::Idle);
     }
@@ -254,7 +259,7 @@ mod tests {
         let took = started.elapsed();
         drop(session);
 
-        let gif = gif.unwrap().expect("a stopped recording gives a GIF");
+        let gif = gif.unwrap().expect("a stopped recording gives a GIF").gif;
         assert!(gif.starts_with(b"GIF89a"), "{} bytes", gif.len());
         assert_eq!(gif[6..10], [80, 0, 45, 0], "the GIF is as large as the output size");
         assert_eq!(told, Some((SMALL, (80, 45))));

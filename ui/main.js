@@ -7,6 +7,8 @@ const colors = document.querySelector("#colors");
 const dither = document.querySelector("#dither");
 const scale = document.querySelector("#scale");
 const tolerance = document.querySelector("#tolerance");
+const maxSize = document.querySelector("#max-size");
+const fitted = document.querySelector("#fitted");
 const make = document.querySelector("#make");
 const record = document.querySelector("#record");
 const cancel = document.querySelector("#cancel");
@@ -28,6 +30,10 @@ function settings() {
 }
 
 let recording = false;
+
+function maxBytes() {
+  return maxSize.value ? Number(maxSize.value) * 1024 * 1024 : null;
+}
 
 function showRecording(now) {
   recording = now;
@@ -72,7 +78,8 @@ record.addEventListener("click", async () => {
     return;
   }
   record.disabled = true;
-  await showGif("record_screen_gif", { settings: { ...settings(), tolerance: Number(tolerance.value), scale: Number(scale.value) } }, "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.");
+  fitted.hidden = true;
+  await showGif("record_screen_gif", { settings: { ...settings(), tolerance: Number(tolerance.value), scale: Number(scale.value), maxBytes: maxBytes() } }, "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.");
   record.disabled = false;
   showRecording(false);
 });
@@ -87,6 +94,14 @@ listen("recording-started", ({ payload: [[width, height], [outWidth, outHeight]]
 const saved = document.querySelector("#saved");
 const savedPath = document.querySelector("#saved-path");
 const showSaved = document.querySelector("#show-saved");
+
+listen("gif-fitted", ({ payload: [percent, colorCount, ignored, fits] }) => {
+  fitted.hidden = false;
+  const how = `크기 ${percent}%, ${colorCount}색, 열화 ${ignored}`;
+  fitted.textContent = fits
+    ? `용량 목표에 맞춘 화질: ${how}`
+    : `가장 낮은 화질(${how})로도 용량 목표보다 큽니다. 더 짧게 녹화하거나 해상도를 낮추세요.`;
+});
 
 listen("gif-saved", ({ payload }) => {
   saved.hidden = false;

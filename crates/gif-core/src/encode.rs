@@ -19,6 +19,7 @@ pub enum EncodeError {
     Colors(usize),
     Dither(f32),
     Tolerance(u8),
+    SizeLimit(usize),
 }
 
 impl ManualSettings {

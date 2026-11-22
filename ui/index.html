@@ -43,6 +43,18 @@
             <option value="25">25%</option>
           </select>
         </label>
+        <label>
+          용량 목표
+          <select id="max-size">
+            <option value="" selected>없음 (위 색 수와 열화 정도 그대로)</option>
+            <option value="1">1MB 이하</option>
+            <option value="2">2MB 이하</option>
+            <option value="5">5MB 이하</option>
+            <option value="8">8MB 이하</option>
+            <option value="10">10MB 이하</option>
+          </select>
+          <small class="hint">녹화에만 적용됩니다. 목표를 고르면 색 수, 열화 정도, 크기를 자동으로 낮춰 맞춥니다.</small>
+        </label>
         <div class="actions">
           <button id="make" type="submit">샘플 만들기</button>
           <button id="record" type="button">녹화 시작</button>
@@ -52,6 +64,7 @@
 
       <p id="hotkey" class="hint"></p>
       <p id="status" role="status">설정을 고르고 버튼을 누르세요.</p>
+      <p id="fitted" class="hint" hidden></p>
       <p id="saved" hidden>
         <span id="saved-path"></span>
         <button id="show-saved" type="button">폴더에서 보기</button>

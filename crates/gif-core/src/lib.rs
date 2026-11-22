@@ -2,6 +2,7 @@ pub mod delay;
 mod diff;
 pub mod dither;
 pub mod encode;
+pub mod fit;
 pub mod fps;
 pub mod hotkey;
 pub mod output;
