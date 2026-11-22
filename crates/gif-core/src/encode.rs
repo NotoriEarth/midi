@@ -2,7 +2,7 @@ use crate::GifFps;
 use crate::dither::ordered_dither;
 use crate::palette::Palette;
 use crate::stabilize::stabilize;
-use crate::writer::{Rgb, write_gif};
+use crate::writer::{Rgb, write_gif_reporting};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ManualSettings {
@@ -42,6 +42,12 @@ impl ManualSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    pub done: usize,
+    pub total: usize,
+}
+
 pub fn encode_gif(
     width: u16,
     height: u16,
@@ -49,7 +55,23 @@ pub fn encode_gif(
     fps: GifFps,
     settings: ManualSettings,
 ) -> Result<Vec<u8>, EncodeError> {
+    encode_gif_reporting(width, height, frames, fps, settings, &mut |_| {})
+}
+
+pub fn encode_gif_reporting(
+    width: u16,
+    height: u16,
+    frames: &[&[Rgb]],
+    fps: GifFps,
+    settings: ManualSettings,
+    on_progress: &mut dyn FnMut(Progress),
+) -> Result<Vec<u8>, EncodeError> {
     check_input(width, height, frames, settings)?;
+    let mut progress = Progress { done: 0, total: frames.len() * 2 };
+    let mut one_more_step = || {
+        progress.done += 1;
+        on_progress(progress);
+    };
 
     let steady = stabilize(frames, settings.tolerance);
     let steady: Vec<&[Rgb]> = steady.iter().map(Vec::as_slice).collect();
@@ -61,13 +83,15 @@ pub fn encode_gif(
     let indexed: Vec<Vec<u8>> = frames
         .iter()
         .map(|frame| {
-            ordered_dither(&mut nearest, frame, usize::from(width), settings.dither)
-                .expect("every frame is width x height pixels")
+            let indices = ordered_dither(&mut nearest, frame, usize::from(width), settings.dither)
+                .expect("every frame is width x height pixels");
+            one_more_step();
+            indices
         })
         .collect();
     let indexed: Vec<&[u8]> = indexed.iter().map(Vec::as_slice).collect();
 
-    let bytes = write_gif(width, height, palette.colors(), &indexed, fps)
+    let bytes = write_gif_reporting(width, height, palette.colors(), &indexed, fps, &mut one_more_step)
         .expect("the indices come from the palette and the frames fit the size");
     Ok(bytes)
 }
@@ -96,8 +120,44 @@ fn check_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::writer::write_gif;
 
     const SHARP: ManualSettings = ManualSettings { colors: 255, dither: 0.0, tolerance: 0 };
+
+    fn five_small_frames() -> Vec<Vec<Rgb>> {
+        (0..5u8).map(|number| (0..8 * 6).map(|index| [index as u8 * 5, number * 40, 90]).collect()).collect()
+    }
+
+    #[test]
+    fn progress_counts_up_one_step_at_a_time_to_the_total() {
+        let frames = five_small_frames();
+        let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
+        let mut reported = Vec::new();
+
+        encode_gif_reporting(8, 6, &slices, GifFps::Fps10, SHARP, &mut |progress| reported.push(progress)).unwrap();
+
+        let dithering_and_writing_each_frame = 10;
+        let expected: Vec<Progress> =
+            (1..=dithering_and_writing_each_frame).map(|done| Progress { done, total: 10 }).collect();
+        assert_eq!(reported, expected);
+    }
+
+    #[test]
+    fn reporting_progress_does_not_change_the_file() {
+        let frames = five_small_frames();
+        let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
+
+        let reporting = encode_gif_reporting(8, 6, &slices, GifFps::Fps10, SHARP, &mut |_| {});
+
+        assert_eq!(reporting, encode_gif(8, 6, &slices, GifFps::Fps10, SHARP));
+    }
+
+    #[test]
+    fn input_that_is_refused_reports_no_progress() {
+        let mut reported = Vec::new();
+        let refused = encode_gif_reporting(8, 6, &[], GifFps::Fps10, SHARP, &mut |progress| reported.push(progress));
+        assert_eq!((refused, reported), (Err(EncodeError::NoFrames), vec![]));
+    }
 
     fn shown_frames(bytes: &[u8]) -> Vec<(u16, Vec<Rgb>)> {
         let mut options = gif::DecodeOptions::new();

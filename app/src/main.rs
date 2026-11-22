@@ -18,7 +18,7 @@ use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use choice::QualityChoice;
-use screen::{Recorded, Recorder, Started};
+use screen::{Recorded, Recorder, RecordingEvent};
 use settings::RecordSettings;
 
 #[tauri::command]
@@ -37,6 +37,7 @@ const RECORDING_STARTED: &str = "recording-started";
 const BEGIN_SELECTION: &str = "begin-selection";
 const GIF_SAVED: &str = "gif-saved";
 const GIF_ENCODED: &str = "gif-encoded";
+const GIF_PROGRESS: &str = "gif-progress";
 const SAVE_FOLDER: &str = "midi";
 
 #[derive(Default)]
@@ -127,11 +128,21 @@ fn record_screen_gif(
     let _keys = KeysWhileRecording(&hotkeys);
     let _ = hotkeys.register(CANCEL_KEY, KeyCombo::ESCAPE);
     let recorded_size = Cell::new((0, 0));
-    let tell_the_page = |started: Started| {
-        recorded_size.set(started.output_size);
-        let _ = hotkeys.register(STOP_KEY, KeyCombo::ENTER);
-        let region = (started.region.width, started.region.height);
-        let _ = window.emit(RECORDING_STARTED, (region, started.output_size, started.limit_ms, started.limited_by));
+    let percent_shown = Cell::new(None);
+    let tell_the_page = |event| match event {
+        RecordingEvent::Started(started) => {
+            recorded_size.set(started.output_size);
+            let _ = hotkeys.register(STOP_KEY, KeyCombo::ENTER);
+            let region = (started.region.width, started.region.height);
+            let limit = (started.limit_ms, started.limited_by);
+            let _ = window.emit(RECORDING_STARTED, (region, started.output_size, limit.0, limit.1));
+        }
+        RecordingEvent::Encoding(step) => {
+            let percent = (step.attempt, step.progress.done * 100 / step.progress.total.max(1));
+            if percent_shown.replace(Some(percent)) != Some(percent) {
+                let _ = window.emit(GIF_PROGRESS, percent);
+            }
+        }
     };
     let recorded = recorder.record(settings.fps, settings.encode_settings()?, settings.output_size(), tell_the_page)?;
     if let Some(Recorded { encoded, ended_at_limit }) = &recorded {

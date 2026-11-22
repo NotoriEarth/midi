@@ -1,5 +1,5 @@
 use crate::GifFps;
-use crate::encode::{EncodeError, ManualSettings, encode_gif};
+use crate::encode::{EncodeError, ManualSettings, Progress, encode_gif_reporting};
 use crate::resize::{downscale, scale_by_percent};
 use crate::writer::Rgb;
 
@@ -49,6 +49,12 @@ pub struct Encoded {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Step {
+    pub attempt: usize,
+    pub progress: Progress,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Candidate {
     level: usize,
     scale_percent: u32,
@@ -92,20 +98,26 @@ pub fn encode(
     frames: &[&[Rgb]],
     fps: GifFps,
     settings: EncodeSettings,
+    on_step: &mut dyn FnMut(Step),
 ) -> Result<Encoded, EncodeError> {
     settings.check()?;
-    let encode_as = |candidate: Candidate| encode_candidate(width, height, frames, fps, settings, candidate);
+    let mut attempt = 0;
+    let mut encode_as = |candidate: Candidate| {
+        attempt += 1;
+        let mut on_progress = |progress| on_step(Step { attempt, progress });
+        encode_candidate(width, height, frames, fps, settings, candidate, &mut on_progress)
+    };
 
     match settings.quality {
         Quality::Level(level) => encode_as(Candidate { level, scale_percent: FULL_SIZE }),
         Quality::WithinBytes { max_bytes, adjust } => {
             let choices = candidates(adjust);
-            let try_choice = |index: usize| {
+            let mut try_choice = |index: usize| {
                 let encoded = encode_as(choices[index])?;
                 let bytes = encoded.gif.len();
                 Ok((encoded, bytes))
             };
-            let (_, encoded, fits) = first_fitting(choices.len(), max_bytes, try_choice)?;
+            let (_, encoded, fits) = first_fitting(choices.len(), max_bytes, &mut try_choice)?;
             Ok(Encoded { within_limit: Some(fits), ..encoded })
         }
     }
@@ -118,6 +130,7 @@ fn encode_candidate(
     fps: GifFps,
     settings: EncodeSettings,
     candidate: Candidate,
+    on_progress: &mut dyn FnMut(Progress),
 ) -> Result<Encoded, EncodeError> {
     let manual = settings.at_level(candidate.level);
     let encoded = |gif, (width, height): (u32, u32)| Encoded {
@@ -130,7 +143,7 @@ fn encode_candidate(
 
     let from = (u32::from(width), u32::from(height));
     if candidate.scale_percent == FULL_SIZE {
-        return Ok(encoded(encode_gif(width, height, frames, fps, manual)?, from));
+        return Ok(encoded(encode_gif_reporting(width, height, frames, fps, manual, on_progress)?, from));
     }
 
     let to = scale_by_percent(from, candidate.scale_percent);
@@ -143,7 +156,7 @@ fn encode_candidate(
         })
         .collect::<Result<_, _>>()?;
     let smaller: Vec<&[Rgb]> = smaller.iter().map(Vec::as_slice).collect();
-    Ok(encoded(encode_gif(to.0 as u16, to.1 as u16, &smaller, fps, manual)?, to))
+    Ok(encoded(encode_gif_reporting(to.0 as u16, to.1 as u16, &smaller, fps, manual, on_progress)?, to))
 }
 
 fn first_fitting<T>(
@@ -178,6 +191,7 @@ fn first_fitting<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encode::encode_gif;
     use std::cell::RefCell;
 
     fn search(sizes: &[usize], max_bytes: usize) -> ((usize, bool), Vec<usize>) {
@@ -276,7 +290,41 @@ mod tests {
     fn encode_film(settings: EncodeSettings) -> Result<Encoded, EncodeError> {
         let frames = noisy_film(64, 48, 6);
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        encode(64, 48, &slices, GifFps::Fps10, settings)
+        encode(64, 48, &slices, GifFps::Fps10, settings, &mut |_| {})
+    }
+
+    fn steps_of(settings: EncodeSettings) -> Vec<Step> {
+        let frames = noisy_film(64, 48, 6);
+        let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
+        let mut steps = Vec::new();
+        encode(64, 48, &slices, GifFps::Fps10, settings, &mut |step| steps.push(step)).unwrap();
+        steps
+    }
+
+    fn finished_attempts(steps: &[Step]) -> Vec<usize> {
+        let finished = steps.iter().filter(|step| step.progress.done == step.progress.total);
+        finished.map(|step| step.attempt).collect()
+    }
+
+    #[test]
+    fn a_chosen_level_is_one_attempt_that_runs_to_the_end() {
+        let steps = steps_of(at(Quality::Level(3)));
+
+        assert_eq!(steps.first().map(|step| step.attempt), Some(1));
+        assert_eq!(finished_attempts(&steps), [1]);
+        assert_eq!(steps.last().unwrap().progress, Progress { done: 12, total: 12 });
+    }
+
+    #[test]
+    fn each_encode_toward_a_limit_is_numbered_and_runs_to_the_end() {
+        let limit = (bytes_at(1) + bytes_at(6)) / 2;
+
+        let steps = steps_of(within(limit, Adjust::Level));
+
+        let attempts = finished_attempts(&steps);
+        assert!(attempts.len() >= 3, "the first, the last and at least one between: {attempts:?}");
+        assert_eq!(attempts, (1..=attempts.len()).collect::<Vec<_>>());
+        assert!(steps.windows(2).all(|pair| pair[0].attempt <= pair[1].attempt));
     }
 
     fn bytes_at(level: usize) -> usize {

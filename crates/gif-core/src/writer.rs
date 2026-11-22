@@ -21,6 +21,17 @@ pub fn write_gif(
     frames: &[&[u8]],
     fps: GifFps,
 ) -> Result<Vec<u8>, GifWriteError> {
+    write_gif_reporting(width, height, palette, frames, fps, &mut || {})
+}
+
+pub fn write_gif_reporting(
+    width: u16,
+    height: u16,
+    palette: &[Rgb],
+    frames: &[&[u8]],
+    fps: GifFps,
+    on_frame_written: &mut dyn FnMut(),
+) -> Result<Vec<u8>, GifWriteError> {
     let pixel_count = usize::from(width) * usize::from(height);
     check_input(pixel_count, palette, frames)?;
 
@@ -43,6 +54,7 @@ pub fn write_gif(
         write_image_position(&mut out, &patch);
         out.push(min_code_size);
         write_sub_blocks(&mut out, &lzw(&patch.pixels, min_code_size));
+        on_frame_written();
     }
     out.push(TRAILER);
     Ok(out)

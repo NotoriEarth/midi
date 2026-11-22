@@ -197,6 +197,12 @@ listen("recording-started", ({ payload: [[width, height], [outWidth, outHeight],
   countdown = setInterval(showTimeLeft, 200);
 });
 
+listen("gif-progress", ({ payload: [attempt, percent] }) => {
+  clearInterval(countdown);
+  const fitting = attempt > 1 ? ` (용량 목표에 맞추는 중, ${attempt}번째 시도)` : "";
+  status.textContent = `GIF로 만드는 중… ${percent}%${fitting}`;
+});
+
 listen("gif-encoded", ({ payload: [usedLevel, withinLimit, [width, height], [finalWidth, finalHeight], endedAtLimit] }) => {
   const shrunk = width !== finalWidth || height !== finalHeight;
   const size = shrunk

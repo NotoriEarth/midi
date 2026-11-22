@@ -17,7 +17,8 @@ pub fn encode(fps: u32, settings: EncodeSettings) -> Result<Vec<u8>, String> {
     let frames: Vec<Vec<Rgb>> = (0..frame_count).map(|number| frame(number, frame_count)).collect();
     let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
 
-    fit::encode(WIDTH as u16, HEIGHT as u16, &frames, fps, settings).map(|encoded| encoded.gif).map_err(explain_encode)
+    let encoded = fit::encode(WIDTH as u16, HEIGHT as u16, &frames, fps, settings, &mut |_| {});
+    encoded.map(|encoded| encoded.gif).map_err(explain_encode)
 }
 
 pub fn parse_fps(fps: u32) -> Result<GifFps, String> {

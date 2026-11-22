@@ -1,7 +1,7 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use gif_core::GifFps;
-use gif_core::fit::{EncodeSettings, Encoded, encode};
+use gif_core::fit::{EncodeSettings, Encoded, Step, encode};
 use gif_core::resize::{OutputSize, ResizeError};
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
@@ -51,6 +51,12 @@ pub struct Started {
     pub limited_by: LimitedBy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingEvent {
+    Started(Started),
+    Encoding(Step),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recorded {
     pub encoded: Encoded,
@@ -74,7 +80,7 @@ impl Recorder {
         fps: u32,
         settings: EncodeSettings,
         size: OutputSize,
-        on_recording: impl FnOnce(Started),
+        mut on_event: impl FnMut(RecordingEvent),
     ) -> Result<Option<Recorded>, String> {
         let fps = parse_fps(fps)?;
         settings.check().map_err(explain_encode)?;
@@ -85,7 +91,7 @@ impl Recorder {
             Some(region) => {
                 let output_size = size.for_source(region.width, region.height).map_err(explain_resize)?;
                 let limit = recording_limit(fps, output_size);
-                self.record_region(region, output_size, fps, limit, settings, on_recording)
+                self.record_region(region, output_size, fps, limit, settings, &mut on_event)
             }
             None => Ok(None),
         }
@@ -106,11 +112,12 @@ impl Recorder {
         fps: GifFps,
         limit: RecordingLimit,
         settings: EncodeSettings,
-        on_recording: impl FnOnce(Started),
+        on_event: &mut dyn FnMut(RecordingEvent),
     ) -> Result<Option<Recorded>, String> {
         let mut capturer = ScreenCapturer::open(region.monitor).map_err(explain_capture)?;
         *self.phase() = Phase::Recording;
-        on_recording(Started { region, output_size, limit_ms: limit.milliseconds(fps), limited_by: limit.by });
+        let started = Started { region, output_size, limit_ms: limit.milliseconds(fps), limited_by: limit.by };
+        on_event(RecordingEvent::Started(started));
 
         let keep_going = || *self.phase() == Phase::Recording;
         let frames =
@@ -120,8 +127,9 @@ impl Recorder {
             return Ok(None);
         };
         let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        let encoded =
-            encode(output_size.0 as u16, output_size.1 as u16, &frames, fps, settings).map_err(explain_encode)?;
+        let mut on_step = |step| on_event(RecordingEvent::Encoding(step));
+        let (width, height) = (output_size.0 as u16, output_size.1 as u16);
+        let encoded = encode(width, height, &frames, fps, settings, &mut on_step).map_err(explain_encode)?;
         Ok(Some(Recorded { encoded, ended_at_limit: ending == Ending::AtLimit }))
     }
 
@@ -330,11 +338,11 @@ mod tests {
         let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
         let recorder = Recorder::default();
         let session = recorder.begin().unwrap();
-        let mut told = None;
+        let mut told = Vec::new();
         let started = Instant::now();
         let gif = thread::scope(|scope| {
             scope.spawn(after(Duration::from_millis(600), || recorder.stop()));
-            recorder.record_region(SMALL, (80, 45), GifFps::Fps10, LONG, SETTINGS, |started| told = Some(started))
+            recorder.record_region(SMALL, (80, 45), GifFps::Fps10, LONG, SETTINGS, &mut |event| told.push(event))
         });
         let took = started.elapsed();
         drop(session);
@@ -345,7 +353,11 @@ mod tests {
         assert!(gif.starts_with(b"GIF89a"), "{} bytes", gif.len());
         assert_eq!(gif[6..10], [80, 0, 45, 0], "the GIF is as large as the output size");
         let started = Started { region: SMALL, output_size: (80, 45), limit_ms: 30_000, limited_by: LimitedBy::Time };
-        assert_eq!(told, Some(started));
+        assert_eq!(told[0], RecordingEvent::Started(started));
+        let Some(&RecordingEvent::Encoding(last)) = told.last() else {
+            panic!("the last thing told is how far encoding got: {told:?}");
+        };
+        assert_eq!((last.attempt, last.progress.done), (1, last.progress.total));
         assert!(took >= Duration::from_millis(600), "{took:?}");
         assert_eq!(*recorder.phase(), Phase::Idle);
     }
@@ -358,7 +370,7 @@ mod tests {
         let _session = recorder.begin().unwrap();
         let gif = thread::scope(|scope| {
             scope.spawn(after(Duration::from_millis(300), || recorder.cancel()));
-            recorder.record_region(SMALL, (160, 90), GifFps::Fps10, LONG, SETTINGS, |_| {})
+            recorder.record_region(SMALL, (160, 90), GifFps::Fps10, LONG, SETTINGS, &mut |_| {})
         });
         assert_eq!(gif, Ok(None));
     }
@@ -370,15 +382,17 @@ mod tests {
         let recorder = Recorder::default();
         let _session = recorder.begin().unwrap();
         let three_frames = RecordingLimit { frames: 3, by: LimitedBy::Memory };
-        let mut told = None;
+        let mut told = Vec::new();
 
         let recorded = recorder
-            .record_region(SMALL, (160, 90), GifFps::Fps10, three_frames, SETTINGS, |started| told = Some(started))
+            .record_region(SMALL, (160, 90), GifFps::Fps10, three_frames, SETTINGS, &mut |event| told.push(event))
             .unwrap()
             .expect("a recording that reached its limit gives a GIF");
 
         assert!(recorded.ended_at_limit);
-        let started = told.unwrap();
+        let RecordingEvent::Started(started) = told[0] else {
+            panic!("the first thing told is that recording started: {told:?}");
+        };
         assert_eq!((started.limit_ms, started.limited_by), (300, LimitedBy::Memory));
     }
 }
