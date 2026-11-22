@@ -21,6 +21,16 @@ pub enum EncodeError {
 impl ManualSettings {
     pub const MIN_COLORS: usize = 2;
     pub const MAX_COLORS: usize = Palette::MAX_COLORS;
+
+    pub fn check(self) -> Result<(), EncodeError> {
+        if !(Self::MIN_COLORS..=Self::MAX_COLORS).contains(&self.colors) {
+            return Err(EncodeError::Colors(self.colors));
+        }
+        if !(0.0..=1.0).contains(&self.dither) {
+            return Err(EncodeError::Dither(self.dither));
+        }
+        Ok(())
+    }
 }
 
 pub fn encode_gif(
@@ -54,12 +64,7 @@ fn check_input(
     frames: &[&[Rgb]],
     settings: ManualSettings,
 ) -> Result<(), EncodeError> {
-    if !(ManualSettings::MIN_COLORS..=ManualSettings::MAX_COLORS).contains(&settings.colors) {
-        return Err(EncodeError::Colors(settings.colors));
-    }
-    if !(0.0..=1.0).contains(&settings.dither) {
-        return Err(EncodeError::Dither(settings.dither));
-    }
+    settings.check()?;
 
     let expected = usize::from(width) * usize::from(height);
     if expected == 0 {

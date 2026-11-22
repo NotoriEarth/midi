@@ -28,18 +28,10 @@
           디더링 강도 <output id="dither-value">1</output>
           <input id="dither" type="range" min="0" max="1" step="0.05" value="1" />
         </label>
-        <label>
-          녹화 길이
-          <select id="seconds">
-            <option value="1">1초</option>
-            <option value="3" selected>3초</option>
-            <option value="5">5초</option>
-            <option value="10">10초</option>
-          </select>
-        </label>
         <div class="actions">
           <button id="make" type="submit">샘플 만들기</button>
-          <button id="record" type="button">화면 녹화</button>
+          <button id="record" type="button">녹화 시작</button>
+          <button id="cancel" type="button" aria-label="녹화 취소" hidden>✕</button>
         </div>
       </form>
 

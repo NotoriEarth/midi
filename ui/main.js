@@ -4,9 +4,9 @@ const form = document.querySelector("#settings");
 const fps = document.querySelector("#fps");
 const colors = document.querySelector("#colors");
 const dither = document.querySelector("#dither");
-const seconds = document.querySelector("#seconds");
 const make = document.querySelector("#make");
 const record = document.querySelector("#record");
+const cancel = document.querySelector("#cancel");
 const status = document.querySelector("#status");
 const preview = document.querySelector("#preview");
 
@@ -23,13 +23,26 @@ function settings() {
   return { fps: Number(fps.value), colors: Number(colors.value), dither: Number(dither.value) };
 }
 
+let recording = false;
+
+function showRecording(now) {
+  recording = now;
+  record.textContent = now ? "끝" : "녹화 시작";
+  cancel.hidden = !now;
+  make.disabled = now;
+}
+
 async function showGif(command, args, busyText) {
-  make.disabled = record.disabled = true;
+  make.disabled = true;
   status.textContent = busyText;
   const started = performance.now();
 
   try {
     const bytes = await invoke(command, args);
+    if (bytes.byteLength === 0) {
+      status.textContent = "녹화를 취소했습니다.";
+      return;
+    }
     const gif = new Blob([bytes], { type: "image/gif" });
     URL.revokeObjectURL(preview.src);
     preview.src = URL.createObjectURL(gif);
@@ -39,7 +52,7 @@ async function showGif(command, args, busyText) {
   } catch (error) {
     status.textContent = `실패: ${error}`;
   } finally {
-    make.disabled = record.disabled = false;
+    make.disabled = false;
   }
 }
 
@@ -48,7 +61,19 @@ form.addEventListener("submit", (event) => {
   showGif("make_sample_gif", settings(), "만드는 중…");
 });
 
-record.addEventListener("click", () => {
-  const length = Number(seconds.value);
-  showGif("record_screen_gif", { ...settings(), seconds: length }, `${length}초 동안 녹화하는 중…`);
+record.addEventListener("click", async () => {
+  if (recording) {
+    status.textContent = "GIF로 만드는 중…";
+    invoke("stop_recording");
+    return;
+  }
+  showRecording(true);
+  await showGif("record_screen_gif", settings(), "녹화하는 중… [끝]을 누르면 GIF로 만듭니다 (최대 30초)");
+  showRecording(false);
+});
+
+cancel.addEventListener("click", () => invoke("cancel_recording"));
+
+window.addEventListener("keydown", (event) => {
+  if (recording && event.key === "Escape") invoke("cancel_recording");
 });

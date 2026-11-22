@@ -27,6 +27,7 @@ pub fn explain_encode(error: EncodeError) -> String {
     match error {
         EncodeError::Colors(colors) => format!("색 수는 2~255 사이여야 합니다: {colors}"),
         EncodeError::Dither(dither) => format!("디더링 강도는 0~1 사이여야 합니다: {dither}"),
+        EncodeError::NoFrames => "녹화된 프레임이 없습니다. 조금 더 길게 녹화하세요.".to_string(),
         other => format!("GIF를 만들지 못했습니다: {other:?}"),
     }
 }
