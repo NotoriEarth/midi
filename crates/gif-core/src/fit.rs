@@ -1,5 +1,6 @@
 use crate::GifFps;
 use crate::encode::{EncodeError, ManualSettings, encode_gif};
+use crate::resize::{downscale, scale_by_percent};
 use crate::writer::Rgb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,11 +17,20 @@ pub const LEVELS: [QualityLevel; 6] =
     [level(255, 0), level(255, 4), level(255, 8), level(128, 8), level(64, 12), level(32, 16)];
 
 pub const BEST_LEVEL: usize = 1;
+pub const FULL_SIZE: u32 = 100;
+pub const SHRINK_STEPS: [u32; 8] = [90, 80, 70, 60, 50, 40, 33, 25];
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Adjust {
+    Level,
+    Size { level: usize },
+    LevelThenSize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Quality {
     Level(usize),
-    WithinBytes(usize),
+    WithinBytes { max_bytes: usize, adjust: Adjust },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -33,14 +43,39 @@ pub struct EncodeSettings {
 pub struct Encoded {
     pub gif: Vec<u8>,
     pub level: usize,
+    pub width: u16,
+    pub height: u16,
     pub within_limit: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Candidate {
+    level: usize,
+    scale_percent: u32,
+}
+
+fn candidates(adjust: Adjust) -> Vec<Candidate> {
+    let lowest = LEVELS.len();
+    let every_level = (BEST_LEVEL..=lowest).map(|level| Candidate { level, scale_percent: FULL_SIZE });
+    let shrinking = |level| SHRINK_STEPS.map(|scale_percent| Candidate { level, scale_percent });
+
+    match adjust {
+        Adjust::Level => every_level.collect(),
+        Adjust::Size { level } => {
+            std::iter::once(Candidate { level, scale_percent: FULL_SIZE }).chain(shrinking(level)).collect()
+        }
+        Adjust::LevelThenSize => every_level.chain(shrinking(lowest)).collect(),
+    }
 }
 
 impl EncodeSettings {
     pub fn check(self) -> Result<(), EncodeError> {
+        let in_range = |level: usize| (BEST_LEVEL..=LEVELS.len()).contains(&level);
         match self.quality {
-            Quality::Level(level) if !(BEST_LEVEL..=LEVELS.len()).contains(&level) => Err(EncodeError::Level(level)),
-            Quality::WithinBytes(0) => Err(EncodeError::SizeLimit(0)),
+            Quality::Level(level) | Quality::WithinBytes { adjust: Adjust::Size { level }, .. } if !in_range(level) => {
+                Err(EncodeError::Level(level))
+            }
+            Quality::WithinBytes { max_bytes: 0, .. } => Err(EncodeError::SizeLimit(0)),
             _ => self.at_level(BEST_LEVEL).check(),
         }
     }
@@ -59,20 +94,56 @@ pub fn encode(
     settings: EncodeSettings,
 ) -> Result<Encoded, EncodeError> {
     settings.check()?;
-    let encode_at = |level: usize| encode_gif(width, height, frames, fps, settings.at_level(level));
+    let encode_as = |candidate: Candidate| encode_candidate(width, height, frames, fps, settings, candidate);
 
     match settings.quality {
-        Quality::Level(level) => Ok(Encoded { gif: encode_at(level)?, level, within_limit: None }),
-        Quality::WithinBytes(max_bytes) => {
-            let try_level = |index: usize| {
-                let gif = encode_at(index + BEST_LEVEL)?;
-                let bytes = gif.len();
-                Ok((gif, bytes))
+        Quality::Level(level) => encode_as(Candidate { level, scale_percent: FULL_SIZE }),
+        Quality::WithinBytes { max_bytes, adjust } => {
+            let choices = candidates(adjust);
+            let try_choice = |index: usize| {
+                let encoded = encode_as(choices[index])?;
+                let bytes = encoded.gif.len();
+                Ok((encoded, bytes))
             };
-            let (index, gif, fits) = first_fitting(LEVELS.len(), max_bytes, try_level)?;
-            Ok(Encoded { gif, level: index + BEST_LEVEL, within_limit: Some(fits) })
+            let (_, encoded, fits) = first_fitting(choices.len(), max_bytes, try_choice)?;
+            Ok(Encoded { within_limit: Some(fits), ..encoded })
         }
     }
+}
+
+fn encode_candidate(
+    width: u16,
+    height: u16,
+    frames: &[&[Rgb]],
+    fps: GifFps,
+    settings: EncodeSettings,
+    candidate: Candidate,
+) -> Result<Encoded, EncodeError> {
+    let manual = settings.at_level(candidate.level);
+    let encoded = |gif, (width, height): (u32, u32)| Encoded {
+        gif,
+        level: candidate.level,
+        width: width as u16,
+        height: height as u16,
+        within_limit: None,
+    };
+
+    let from = (u32::from(width), u32::from(height));
+    if candidate.scale_percent == FULL_SIZE {
+        return Ok(encoded(encode_gif(width, height, frames, fps, manual)?, from));
+    }
+
+    let to = scale_by_percent(from, candidate.scale_percent);
+    let expected = usize::from(width) * usize::from(height);
+    let smaller: Vec<Vec<Rgb>> = frames
+        .iter()
+        .enumerate()
+        .map(|(frame, pixels)| {
+            downscale(pixels, from, to).map_err(|_| EncodeError::FrameSize { frame, expected, actual: pixels.len() })
+        })
+        .collect::<Result<_, _>>()?;
+    let smaller: Vec<&[Rgb]> = smaller.iter().map(Vec::as_slice).collect();
+    Ok(encoded(encode_gif(to.0 as u16, to.1 as u16, &smaller, fps, manual)?, to))
 }
 
 fn first_fitting<T>(
@@ -144,9 +215,9 @@ mod tests {
     }
 
     #[test]
-    fn ten_levels_never_take_more_than_six_encodes() {
-        let sizes = [1000, 900, 800, 700, 600, 500, 400, 300, 200, 100];
-        for limit in (50..=1050).step_by(50) {
+    fn fourteen_choices_never_take_more_than_six_encodes() {
+        let sizes: Vec<usize> = (1..=14).rev().map(|step| step * 100).collect();
+        for limit in (50..=1450).step_by(50) {
             let (_, tried) = search(&sizes, limit);
             assert!(tried.len() <= 6, "limit {limit} tried {tried:?}");
         }
@@ -156,6 +227,28 @@ mod tests {
     fn a_failed_encode_stops_the_search() {
         let failing = |_| Err::<((), usize), _>(EncodeError::NoFrames);
         assert_eq!(first_fitting(4, 100, failing).err(), Some(EncodeError::NoFrames));
+    }
+
+    fn choices(adjust: Adjust) -> Vec<(usize, u32)> {
+        candidates(adjust).iter().map(|candidate| (candidate.level, candidate.scale_percent)).collect()
+    }
+
+    #[test]
+    fn adjusting_the_level_keeps_full_size_and_walks_down_the_levels() {
+        assert_eq!(choices(Adjust::Level), [(1, 100), (2, 100), (3, 100), (4, 100), (5, 100), (6, 100)]);
+    }
+
+    #[test]
+    fn adjusting_the_size_keeps_the_level_and_stops_at_a_quarter() {
+        let expected = [(2, 100), (2, 90), (2, 80), (2, 70), (2, 60), (2, 50), (2, 40), (2, 33), (2, 25)];
+        assert_eq!(choices(Adjust::Size { level: 2 }), expected);
+    }
+
+    #[test]
+    fn adjusting_both_lowers_the_level_first_and_shrinks_only_after_the_lowest_level() {
+        let both = choices(Adjust::LevelThenSize);
+        assert_eq!(both[..6], [(1, 100), (2, 100), (3, 100), (4, 100), (5, 100), (6, 100)]);
+        assert_eq!(both[6..], [(6, 90), (6, 80), (6, 70), (6, 60), (6, 50), (6, 40), (6, 33), (6, 25)]);
     }
 
     fn noisy_film(width: usize, height: usize, frames: usize) -> Vec<Vec<Rgb>> {
@@ -176,10 +269,22 @@ mod tests {
         EncodeSettings { quality, dither: 1.0 }
     }
 
+    fn within(max_bytes: usize, adjust: Adjust) -> EncodeSettings {
+        at(Quality::WithinBytes { max_bytes, adjust })
+    }
+
     fn encode_film(settings: EncodeSettings) -> Result<Encoded, EncodeError> {
         let frames = noisy_film(64, 48, 6);
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
         encode(64, 48, &slices, GifFps::Fps10, settings)
+    }
+
+    fn bytes_at(level: usize) -> usize {
+        encode_film(at(Quality::Level(level))).unwrap().gif.len()
+    }
+
+    fn summary(encoded: &Encoded) -> (usize, (u16, u16), Option<bool>) {
+        (encoded.level, (encoded.width, encoded.height), encoded.within_limit)
     }
 
     #[test]
@@ -191,50 +296,86 @@ mod tests {
 
         let encoded = encode_film(at(Quality::Level(4))).unwrap();
 
-        assert_eq!(encoded, Encoded { gif: direct, level: 4, within_limit: None });
+        assert_eq!(encoded, Encoded { gif: direct, level: 4, width: 64, height: 48, within_limit: None });
     }
 
     #[test]
     fn a_lower_level_gives_a_smaller_file() {
-        let sizes: Vec<usize> =
-            (1..=LEVELS.len()).map(|level| encode_film(at(Quality::Level(level))).unwrap().gif.len()).collect();
+        let sizes: Vec<usize> = (1..=LEVELS.len()).map(bytes_at).collect();
         assert!(sizes.windows(2).all(|pair| pair[0] >= pair[1]), "{sizes:?}");
         assert!(sizes[0] > sizes[5], "{sizes:?}");
     }
 
     #[test]
-    fn a_generous_limit_keeps_the_best_level() {
-        let encoded = encode_film(at(Quality::WithinBytes(10_000_000))).unwrap();
-        assert_eq!((encoded.level, encoded.within_limit), (BEST_LEVEL, Some(true)));
+    fn a_generous_limit_keeps_the_best_level_and_the_full_size() {
+        for adjust in [Adjust::Level, Adjust::LevelThenSize] {
+            let encoded = encode_film(within(10_000_000, adjust)).unwrap();
+            assert_eq!(summary(&encoded), (BEST_LEVEL, (64, 48), Some(true)), "{adjust:?}");
+        }
     }
 
     #[test]
-    fn a_tight_limit_gives_a_file_within_it_at_a_lower_level() {
-        let best = encode_film(at(Quality::Level(BEST_LEVEL))).unwrap().gif.len();
-        let worst = encode_film(at(Quality::Level(LEVELS.len()))).unwrap().gif.len();
-        let limit = (best + worst) / 2;
+    fn with_the_size_fixed_a_tight_limit_lowers_the_level_only() {
+        let limit = (bytes_at(1) + bytes_at(6)) / 2;
 
-        let encoded = encode_film(at(Quality::WithinBytes(limit))).unwrap();
+        let encoded = encode_film(within(limit, Adjust::Level)).unwrap();
 
-        assert_eq!(encoded.within_limit, Some(true));
         assert!(encoded.gif.len() <= limit, "{} bytes for a limit of {limit}", encoded.gif.len());
         assert!(encoded.level > BEST_LEVEL);
-        assert_eq!(encoded.gif, encode_film(at(Quality::Level(encoded.level))).unwrap().gif);
+        assert_eq!(((encoded.width, encoded.height), encoded.within_limit), ((64, 48), Some(true)));
     }
 
     #[test]
-    fn the_picture_keeps_its_size_however_tight_the_limit() {
-        let encoded = encode_film(at(Quality::WithinBytes(1))).unwrap();
+    fn with_the_size_fixed_an_impossible_limit_gives_the_lowest_level_at_full_size() {
+        let encoded = encode_film(within(1, Adjust::Level)).unwrap();
 
-        assert_eq!((encoded.level, encoded.within_limit), (LEVELS.len(), Some(false)));
+        assert_eq!(summary(&encoded), (6, (64, 48), Some(false)));
         assert_eq!(encoded.gif[6..10], [64, 0, 48, 0]);
+    }
+
+    #[test]
+    fn with_the_level_fixed_a_tight_limit_shrinks_the_picture_only() {
+        let limit = bytes_at(2) / 2;
+
+        let encoded = encode_film(within(limit, Adjust::Size { level: 2 })).unwrap();
+
+        assert!(encoded.gif.len() <= limit, "{} bytes for a limit of {limit}", encoded.gif.len());
+        assert_eq!((encoded.level, encoded.within_limit), (2, Some(true)));
+        assert!(encoded.width < 64 && encoded.height < 48, "{}x{}", encoded.width, encoded.height);
+        assert_eq!(encoded.gif[6..10], [encoded.width as u8, 0, encoded.height as u8, 0]);
+    }
+
+    #[test]
+    fn with_the_level_fixed_an_impossible_limit_stops_at_a_quarter_of_the_size() {
+        let encoded = encode_film(within(1, Adjust::Size { level: 2 })).unwrap();
+        assert_eq!(summary(&encoded), (2, (16, 12), Some(false)));
+    }
+
+    #[test]
+    fn with_nothing_fixed_the_level_drops_before_the_size_does() {
+        let reachable_by_level = (bytes_at(1) + bytes_at(6)) / 2;
+        let by_level = encode_film(within(reachable_by_level, Adjust::LevelThenSize)).unwrap();
+        assert_eq!(((by_level.width, by_level.height), by_level.within_limit), ((64, 48), Some(true)));
+
+        let below_every_level = bytes_at(6) / 2;
+        let by_size = encode_film(within(below_every_level, Adjust::LevelThenSize)).unwrap();
+        assert!(by_size.gif.len() <= below_every_level);
+        assert_eq!((by_size.level, by_size.within_limit), (6, Some(true)));
+        assert!(by_size.width < 64, "{}x{}", by_size.width, by_size.height);
+    }
+
+    #[test]
+    fn with_nothing_fixed_an_impossible_limit_gives_the_lowest_level_at_a_quarter() {
+        let encoded = encode_film(within(1, Adjust::LevelThenSize)).unwrap();
+        assert_eq!(summary(&encoded), (6, (16, 12), Some(false)));
     }
 
     #[test]
     fn settings_out_of_range_are_rejected() {
         assert_eq!(at(Quality::Level(0)).check(), Err(EncodeError::Level(0)));
         assert_eq!(at(Quality::Level(7)).check(), Err(EncodeError::Level(7)));
-        assert_eq!(at(Quality::WithinBytes(0)).check(), Err(EncodeError::SizeLimit(0)));
+        assert_eq!(within(1000, Adjust::Size { level: 7 }).check(), Err(EncodeError::Level(7)));
+        assert_eq!(within(0, Adjust::Level).check(), Err(EncodeError::SizeLimit(0)));
         assert_eq!(EncodeSettings { quality: Quality::Level(1), dither: 2.0 }.check(), Err(EncodeError::Dither(2.0)));
         assert_eq!(encode_film(at(Quality::Level(7))), Err(EncodeError::Level(7)));
         assert_eq!(at(Quality::Level(6)).check(), Ok(()));

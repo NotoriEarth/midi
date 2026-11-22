@@ -1,10 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod choice;
 mod sample;
 mod save;
 mod screen;
 
-use gif_core::fit::{BEST_LEVEL, EncodeSettings, LEVELS, Quality};
+use gif_core::fit::LEVELS;
 use gif_core::resize::OutputSize;
 use gif_core::hotkey::Hotkey;
 use gif_core::session::ScreenRect;
@@ -17,26 +18,8 @@ use gif_win::{HotkeyTaken, Hotkeys, KeyCombo, cancel_selection, local_time};
 use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
+use choice::QualityChoice;
 use screen::Recorder;
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct QualityChoice {
-    level: Option<usize>,
-    max_bytes: Option<usize>,
-    dither: f32,
-}
-
-impl From<QualityChoice> for EncodeSettings {
-    fn from(choice: QualityChoice) -> EncodeSettings {
-        let quality = match (choice.level, choice.max_bytes) {
-            (Some(level), _) => Quality::Level(level),
-            (None, Some(max_bytes)) => Quality::WithinBytes(max_bytes),
-            (None, None) => Quality::Level(BEST_LEVEL),
-        };
-        EncodeSettings { quality, dither: choice.dither }
-    }
-}
 
 #[tauri::command]
 fn quality_levels() -> Vec<(usize, u8)> {
@@ -45,7 +28,8 @@ fn quality_levels() -> Vec<(usize, u8)> {
 
 #[tauri::command(async)]
 fn make_sample_gif(fps: u32, quality: QualityChoice) -> Result<Response, String> {
-    sample::encode(fps, quality.into()).map(Response::new)
+    let size_is_fixed = false;
+    sample::encode(fps, quality.settings(size_is_fixed)?).map(Response::new)
 }
 
 const CANCELLED: Vec<u8> = Vec::new();
@@ -139,9 +123,11 @@ fn record_screen_gif(
         Some((width, height)) => OutputSize::FitWithin { width, height },
         None => OutputSize::Original,
     };
-    let encoded = recorder.record(settings.fps, settings.quality.into(), size, tell_the_page)?;
+    let encode_settings = settings.quality.settings(settings.fit_within.is_some())?;
+    let encoded = recorder.record(settings.fps, encode_settings, size, tell_the_page)?;
     if let Some(encoded) = &encoded {
-        let _ = window.emit(GIF_ENCODED, (encoded.level, encoded.within_limit, recorded_size.get()));
+        let final_size = (encoded.width, encoded.height);
+        let _ = window.emit(GIF_ENCODED, (encoded.level, encoded.within_limit, recorded_size.get(), final_size));
     }
     let gif = encoded.map(|encoded| encoded.gif);
     if let Some(gif) = &gif {

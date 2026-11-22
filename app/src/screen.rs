@@ -154,7 +154,7 @@ fn explain_capture(error: CaptureError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gif_core::fit::Quality;
+    use gif_core::fit::{Adjust, Quality};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -163,7 +163,8 @@ mod tests {
     const SMALL: ScreenRect = ScreenRect { monitor: PRIMARY, x: 0, y: 0, width: 160, height: 90 };
     const SETTINGS: EncodeSettings = EncodeSettings { quality: Quality::Level(3), dither: 0.5 };
     const NO_SUCH_LEVEL: EncodeSettings = EncodeSettings { quality: Quality::Level(9), ..SETTINGS };
-    const NO_ROOM: EncodeSettings = EncodeSettings { quality: Quality::WithinBytes(0), ..SETTINGS };
+    const NO_ROOM: EncodeSettings =
+        EncodeSettings { quality: Quality::WithinBytes { max_bytes: 0, adjust: Adjust::Level }, ..SETTINGS };
     const ORIGINAL: OutputSize = OutputSize::Original;
     const NO_WIDTH: OutputSize = OutputSize::FitWithin { width: 0, height: 270 };
 

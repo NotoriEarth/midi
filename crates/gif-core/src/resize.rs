@@ -41,6 +41,11 @@ impl OutputSize {
     }
 }
 
+pub fn scale_by_percent((width, height): (u32, u32), percent: u32) -> (u32, u32) {
+    let scaled = |side: u32| ((u64::from(side) * u64::from(percent) / 100) as u32).max(1);
+    (scaled(width), scaled(height))
+}
+
 pub fn downscale(pixels: &[Rgb], from: (u32, u32), to: (u32, u32)) -> Result<Vec<Rgb>, ResizeError> {
     let (from_width, from_height) = (from.0 as usize, from.1 as usize);
     let (to_width, to_height) = (to.0 as usize, to.1 as usize);
@@ -131,6 +136,14 @@ mod tests {
         assert_eq!(within(0, 270).check(), Err(ResizeError::EmptyTarget));
         assert_eq!(within(480, 0).for_source(800, 500), Err(ResizeError::EmptyTarget));
         assert_eq!(OutputSize::Original.check(), Ok(()));
+    }
+
+    #[test]
+    fn a_percentage_scales_both_sides_and_never_reaches_zero() {
+        assert_eq!(scale_by_percent((1920, 1080), 50), (960, 540));
+        assert_eq!(scale_by_percent((64, 48), 25), (16, 12));
+        assert_eq!(scale_by_percent((480, 270), 33), (158, 89));
+        assert_eq!(scale_by_percent((3, 2), 25), (1, 1));
     }
 
     #[test]

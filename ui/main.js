@@ -33,18 +33,33 @@ function describeLevel(number) {
   return `${number}단계 (${colors}색, 열화 ${tolerance})`;
 }
 
+function sizeIsFixed() {
+  return sizeMode.value === "fit";
+}
+
+function levelIsFixed() {
+  return level.value !== "";
+}
+
+function howTheLimitIsMet() {
+  if (sizeIsFixed() && levelIsFixed()) {
+    return "크기와 화질 단계를 둘 다 정해서 조정할 것이 없습니다. 둘 중 하나를 자동으로 두면 쓸 수 있습니다.";
+  }
+  if (sizeIsFixed()) return "크기는 그대로 두고, 화질 단계를 낮춰서 맞춥니다.";
+  if (levelIsFixed()) return "화질 단계는 그대로 두고, 크기를 원래의 25%까지 줄여서 맞춥니다.";
+  return "화질 단계를 먼저 낮추고, 6단계로도 넘으면 크기를 원래의 25%까지 줄여서 맞춥니다.";
+}
+
 function showChoices() {
-  const automatic = level.value === "";
-  sizeBox.hidden = sizeMode.value !== "fit";
-  maxSize.disabled = !automatic;
-  maxSizeBox.hidden = !automatic || maxSize.value !== "custom";
-  maxSizeHint.textContent = automatic
-    ? "크기는 그대로 두고, 이 용량 안에 들어오는 가장 좋은 화질 단계를 고릅니다."
-    : "화질 단계를 직접 골랐기 때문에 쓰이지 않습니다. 화질 단계를 자동으로 두면 쓸 수 있습니다.";
+  const nothingToAdjust = sizeIsFixed() && levelIsFixed();
+  sizeBox.hidden = !sizeIsFixed();
+  maxSize.disabled = nothingToAdjust;
+  maxSizeBox.hidden = nothingToAdjust || maxSize.value !== "custom";
+  maxSizeHint.textContent = howTheLimitIsMet();
 }
 
 function maxBytes() {
-  if (level.value !== "" || maxSize.value === "") return null;
+  if ((sizeIsFixed() && levelIsFixed()) || maxSize.value === "") return null;
   const megabytes = maxSize.value === "custom" ? Number(maxSizeCustom.value) : Number(maxSize.value);
   return Math.round(megabytes * BYTES_PER_MB);
 }
@@ -58,7 +73,7 @@ function quality() {
 }
 
 function fitWithin() {
-  return sizeMode.value === "fit" ? [Number(sizeWidth.value), Number(sizeHeight.value)] : null;
+  return sizeIsFixed() ? [Number(sizeWidth.value), Number(sizeHeight.value)] : null;
 }
 
 function showRecording(now) {
@@ -127,16 +142,20 @@ listen("recording-started", ({ payload: [[width, height], [outWidth, outHeight]]
   status.textContent = `${size} 녹화하는 중… Enter나 [끝]으로 마치고, Esc나 [✕]로 취소합니다.`;
 });
 
-listen("gif-encoded", ({ payload: [usedLevel, withinLimit, [width, height]] }) => {
+listen("gif-encoded", ({ payload: [usedLevel, withinLimit, [width, height], [finalWidth, finalHeight]] }) => {
+  const shrunk = width !== finalWidth || height !== finalHeight;
+  const size = shrunk
+    ? `크기 ${width}×${height} → ${finalWidth}×${finalHeight}`
+    : `크기 ${finalWidth}×${finalHeight}`;
+  const made = `${size}, 화질 ${describeLevel(usedLevel)}`;
   encoded.hidden = false;
   if (withinLimit === null) {
-    encoded.textContent = `${width}×${height}, 화질 ${describeLevel(usedLevel)}`;
+    encoded.textContent = made;
   } else if (withinLimit) {
-    encoded.textContent = `${width}×${height}, 용량 목표에 맞춘 화질: ${describeLevel(usedLevel)}`;
+    encoded.textContent = `용량 목표에 맞춤: ${made}`;
   } else {
-    encoded.textContent =
-      `${width}×${height} 크기에서는 가장 낮은 화질 ${describeLevel(usedLevel)}로도 용량 목표보다 큽니다. ` +
-      "크기를 줄이거나 더 짧게 녹화하세요.";
+    const advice = sizeIsFixed() ? "크기를 줄이거나 더 짧게 녹화하세요." : "더 짧게 녹화하세요.";
+    encoded.textContent = `용량 목표보다 큽니다. 조정할 수 있는 끝까지 낮췄습니다: ${made}. ${advice}`;
   }
 });
 
