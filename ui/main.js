@@ -80,6 +80,20 @@ listen("recording-started", ({ payload: [width, height] }) => {
   status.textContent = `${width}×${height} 녹화하는 중… Enter나 [끝]으로 마치고, Esc나 [✕]로 취소합니다.`;
 });
 
+const saved = document.querySelector("#saved");
+const savedPath = document.querySelector("#saved-path");
+const showSaved = document.querySelector("#show-saved");
+
+listen("gif-saved", ({ payload }) => {
+  saved.hidden = false;
+  showSaved.hidden = !("Ok" in payload);
+  savedPath.textContent = "Ok" in payload ? `저장: ${payload.Ok}` : `저장 실패: ${payload.Err}`;
+});
+
+showSaved.addEventListener("click", () => {
+  invoke("show_saved_gif").catch((problem) => (savedPath.textContent = problem));
+});
+
 cancel.addEventListener("click", () => invoke("cancel_recording"));
 
 listen("begin-selection", () => {

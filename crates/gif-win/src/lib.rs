@@ -1,12 +1,14 @@
 #![cfg(windows)]
 
 mod capture;
+mod clock;
 mod hotkeys;
 mod overlay;
 mod pixels;
 mod record;
 
 pub use capture::ScreenCapturer;
+pub use clock::local_time;
 pub use hotkeys::{HotkeyTaken, Hotkeys, KeyCombo};
 pub use overlay::{cancel_selection, select_region};
 pub use record::record_screen;

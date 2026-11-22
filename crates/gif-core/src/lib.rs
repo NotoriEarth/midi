@@ -4,6 +4,7 @@ pub mod dither;
 pub mod encode;
 pub mod fps;
 pub mod hotkey;
+pub mod output;
 pub mod palette;
 pub mod schedule;
 pub mod selection;

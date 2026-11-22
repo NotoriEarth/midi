@@ -1,11 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod sample;
+mod save;
 mod screen;
 
 use gif_core::hotkey::Hotkey;
 use gif_core::session::ScreenRect;
-use gif_win::{HotkeyTaken, Hotkeys, KeyCombo, cancel_selection};
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::Mutex;
+
+use gif_win::{HotkeyTaken, Hotkeys, KeyCombo, cancel_selection, local_time};
 use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
@@ -19,6 +24,27 @@ fn make_sample_gif(fps: u32, colors: usize, dither: f32) -> Result<Response, Str
 const CANCELLED: Vec<u8> = Vec::new();
 const RECORDING_STARTED: &str = "recording-started";
 const BEGIN_SELECTION: &str = "begin-selection";
+const GIF_SAVED: &str = "gif-saved";
+const SAVE_FOLDER: &str = "midi";
+
+#[derive(Default)]
+struct LastSaved(Mutex<Option<PathBuf>>);
+
+fn save_to_pictures(app: &AppHandle, gif: &[u8]) -> Result<PathBuf, String> {
+    let pictures = app.path().picture_dir().map_err(|error| format!("사진 폴더를 찾지 못했습니다: {error}"))?;
+    let folder = pictures.join(SAVE_FOLDER);
+    save::save_gif(&folder, local_time(), gif)
+        .map_err(|error| format!("{}에 저장하지 못했습니다: {error}", folder.display()))
+}
+
+#[tauri::command]
+fn show_saved_gif(last: State<LastSaved>) -> Result<(), String> {
+    let last = last.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let path = last.as_ref().ok_or("아직 저장한 GIF가 없습니다.")?;
+    let mut select = std::ffi::OsString::from("/select,");
+    select.push(path);
+    Command::new("explorer").arg(select).spawn().map(drop).map_err(|error| format!("탐색기를 열지 못했습니다: {error}"))
+}
 
 const BEGIN_KEY: u32 = 1;
 const STOP_KEY: u32 = 2;
@@ -62,6 +88,7 @@ fn record_screen_gif(
     window: WebviewWindow,
     recorder: State<Recorder>,
     hotkeys: State<Hotkeys>,
+    last: State<LastSaved>,
     fps: u32,
     colors: usize,
     dither: f32,
@@ -73,6 +100,13 @@ fn record_screen_gif(
         let _ = window.emit(RECORDING_STARTED, (region.width, region.height));
     };
     let gif = recorder.record(fps, colors, dither, tell_the_page)?;
+    if let Some(gif) = &gif {
+        let saved = save_to_pictures(window.app_handle(), gif);
+        let _ = window.emit(GIF_SAVED, saved.as_ref().map(|path| path.display().to_string()));
+        if let Ok(path) = saved {
+            *last.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path);
+        }
+    }
     Ok(Response::new(gif.unwrap_or(CANCELLED)))
 }
 
@@ -89,6 +123,7 @@ fn cancel_recording(recorder: State<Recorder>) {
 fn main() {
     tauri::Builder::default()
         .manage(Recorder::default())
+        .manage(LastSaved::default())
         .setup(|app| {
             let handle = app.handle().clone();
             let hotkeys = Hotkeys::listen(move |id| on_hotkey(&handle, id));
@@ -97,7 +132,7 @@ fn main() {
             app.manage(hotkeys);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![make_sample_gif, record_screen_gif, stop_recording, cancel_recording, begin_hotkey])
+        .invoke_handler(tauri::generate_handler![make_sample_gif, record_screen_gif, stop_recording, cancel_recording, begin_hotkey, show_saved_gif])
         .run(tauri::generate_context!())
         .expect("the app window can be created");
 }
