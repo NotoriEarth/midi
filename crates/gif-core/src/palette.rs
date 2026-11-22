@@ -21,15 +21,10 @@ impl Palette {
             return Err(PaletteError::ColorLimit(max_colors));
         }
 
-        let mut counts: HashMap<Rgb, u64> = HashMap::new();
-        for &pixel in frames.iter().copied().flatten() {
-            *counts.entry(pixel).or_default() += 1;
-        }
-        if counts.is_empty() {
+        let every_color = count_colors(frames);
+        if every_color.is_empty() {
             return Err(PaletteError::NoPixels);
         }
-        let mut every_color: Vec<CountedColor> = counts.into_iter().collect();
-        every_color.sort();
 
         let mut boxes = vec![every_color];
         while boxes.len() < max_colors {
@@ -83,13 +78,31 @@ impl NearestColor<'_> {
     }
 
     pub fn of(&mut self, pixel: Rgb) -> u8 {
-        let [red, green, blue] = pixel.map(usize::from);
-        let slot = red << 16 | green << 8 | blue;
+        let slot = slot_of(pixel);
         if self.answers[slot] == NOT_ASKED_YET {
             self.answers[slot] = self.palette.nearest(pixel);
         }
         self.answers[slot]
     }
+}
+
+fn slot_of(pixel: Rgb) -> usize {
+    let [red, green, blue] = pixel.map(usize::from);
+    red << 16 | green << 8 | blue
+}
+
+fn color_of(slot: usize) -> Rgb {
+    [(slot >> 16) as u8, (slot >> 8) as u8, slot as u8]
+}
+
+fn count_colors(frames: &[&[Rgb]]) -> Vec<CountedColor> {
+    let mut counts = vec![0u32; EVERY_RGB_COLOR];
+    for &pixel in frames.iter().copied().flatten() {
+        let count = &mut counts[slot_of(pixel)];
+        *count = count.saturating_add(1);
+    }
+    let seen = counts.iter().enumerate().filter(|&(_, &count)| count > 0);
+    seen.map(|(slot, &count)| (color_of(slot), u64::from(count))).collect()
 }
 
 fn squared_distance(a: Rgb, b: Rgb) -> u32 {
@@ -268,6 +281,14 @@ mod tests {
         }
         let answers: std::collections::HashSet<u8> = palette.colors().iter().map(|&color| lookup.of(color)).collect();
         assert!(answers.contains(&254), "the last entry is never mistaken for an empty slot");
+    }
+
+    #[test]
+    fn colors_are_counted_in_order_with_how_often_each_appears() {
+        let first = [[0, 0, 255], [255, 0, 0], [0, 0, 255]];
+        let second = [[0, 1, 0], [0, 0, 255]];
+        let counted = count_colors(&[&first, &second]);
+        assert_eq!(counted, [([0, 0, 255], 3), ([0, 1, 0], 1), ([255, 0, 0], 1)]);
     }
 
     #[test]
