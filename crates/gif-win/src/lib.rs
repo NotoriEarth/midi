@@ -13,7 +13,7 @@ mod record;
 mod spool;
 
 pub use border::RecordingBorder;
-pub use capture::{ScreenCapturer, monitor_size};
+pub use capture::{ScreenCapturer, monitor_at_cursor, monitor_size};
 pub use clock::local_time;
 pub use disk::free_disk_bytes;
 pub use frame::adjust_frame;

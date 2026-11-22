@@ -2,14 +2,19 @@ use std::time::{Duration, Instant};
 
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
-use windows::Win32::Foundation::{HMODULE, RECT};
+use windows::Win32::Foundation::{HMODULE, POINT, RECT};
+use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext};
+use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
     D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device,
     ID3D11DeviceContext, ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_MODE_ROTATION_ROTATE90, DXGI_MODE_ROTATION_ROTATE180, DXGI_MODE_ROTATION_ROTATE270,
+    DXGI_SAMPLE_DESC,
+};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT,
     DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1,
@@ -18,7 +23,7 @@ use windows::Win32::Graphics::Dxgi::{
 use windows::core::Interface;
 
 use crate::CaptureError;
-use crate::pixels::{MonitorImage, crop_to_rgb};
+use crate::pixels::{MonitorImage, Rotation, crop_to_rgb};
 
 const NO_WAIT_MS: u32 = 0;
 const FIRST_PICTURE_WAIT: Duration = Duration::from_millis(500);
@@ -27,6 +32,7 @@ pub struct ScreenCapturer {
     monitor: MonitorId,
     width: u32,
     height: u32,
+    rotation: Rotation,
     context: ID3D11DeviceContext,
     duplication: IDXGIOutputDuplication,
     latest: ID3D11Texture2D,
@@ -40,13 +46,25 @@ impl ScreenCapturer {
 
         let output: IDXGIOutput1 = output.cast().map_err(system)?;
         let duplication = unsafe { output.DuplicateOutput(&device) }.map_err(system)?;
-        let mode = unsafe { duplication.GetDesc() }.ModeDesc;
-        let latest = create_cpu_readable_texture(&device, mode.Width, mode.Height)?;
+        let description = unsafe { duplication.GetDesc() };
+        let rotation = match description.Rotation {
+            DXGI_MODE_ROTATION_ROTATE90 => Rotation::Clockwise90,
+            DXGI_MODE_ROTATION_ROTATE180 => Rotation::Half,
+            DXGI_MODE_ROTATION_ROTATE270 => Rotation::Clockwise270,
+            _ => Rotation::None,
+        };
+        let mode = description.ModeDesc;
+        let (width, height) = match rotation {
+            Rotation::Clockwise90 | Rotation::Clockwise270 => (mode.Height, mode.Width),
+            Rotation::None | Rotation::Half => (mode.Width, mode.Height),
+        };
+        let latest = create_cpu_readable_texture(&device, width, height)?;
 
         Ok(ScreenCapturer {
             monitor,
-            width: mode.Width,
-            height: mode.Height,
+            width,
+            height,
+            rotation,
             context,
             duplication,
             latest,
@@ -59,7 +77,10 @@ impl ScreenCapturer {
     }
 
     pub fn monitor_size(&self) -> (u32, u32) {
-        (self.width, self.height)
+        match self.rotation {
+            Rotation::Clockwise90 | Rotation::Clockwise270 => (self.height, self.width),
+            Rotation::None | Rotation::Half => (self.width, self.height),
+        }
     }
 
     pub fn capture(&mut self, region: ScreenRect) -> Result<Vec<Rgb>, CaptureError> {
@@ -115,7 +136,7 @@ impl ScreenCapturer {
         let bgra = unsafe {
             std::slice::from_raw_parts(mapped.pData.cast::<u8>(), row_pitch * self.height as usize)
         };
-        let image = MonitorImage { bgra, row_pitch, width: self.width, height: self.height };
+        let image = MonitorImage { bgra, row_pitch, width: self.width, height: self.height, rotation: self.rotation };
         let pixels = crop_to_rgb(&image, region);
 
         unsafe { self.context.Unmap(&self.latest, 0) };
@@ -138,6 +159,37 @@ fn ends_the_list<T>(result: windows::core::Result<T>) -> Result<Option<T>, Captu
 pub fn monitor_size(monitor: MonitorId) -> Result<(u32, u32), CaptureError> {
     let bounds = monitor_bounds(monitor)?;
     Ok(((bounds.right - bounds.left) as u32, (bounds.bottom - bounds.top) as u32))
+}
+
+fn monitor_containing((x, y): (i32, i32), monitors: &[RECT]) -> Option<usize> {
+    monitors.iter().position(|area| (area.left..area.right).contains(&x) && (area.top..area.bottom).contains(&y))
+}
+
+fn every_monitor() -> Result<Vec<RECT>, CaptureError> {
+    let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(system)?;
+    let mut areas = Vec::new();
+    for adapter_index in 0.. {
+        let Some(adapter) = ends_the_list(unsafe { factory.EnumAdapters1(adapter_index) })? else {
+            break;
+        };
+        for output_index in 0.. {
+            let Some(output) = ends_the_list(unsafe { adapter.EnumOutputs(output_index) })? else {
+                break;
+            };
+            areas.push(unsafe { output.GetDesc() }.map_err(system)?.DesktopCoordinates);
+        }
+    }
+    Ok(areas)
+}
+
+pub fn monitor_at_cursor() -> MonitorId {
+    let mut cursor = POINT::default();
+    let earlier_awareness = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    let found = unsafe { GetCursorPos(&mut cursor) }.is_ok();
+    unsafe { SetThreadDpiAwarenessContext(earlier_awareness) };
+    let monitors = every_monitor().unwrap_or_default();
+    let index = found.then(|| monitor_containing((cursor.x, cursor.y), &monitors)).flatten().unwrap_or(0);
+    MonitorId(index as u32)
 }
 
 pub(crate) fn monitor_bounds(monitor: MonitorId) -> Result<RECT, CaptureError> {
@@ -217,6 +269,42 @@ fn create_cpu_readable_texture(
 mod tests {
     use super::*;
     use crate::desktop::{PRIMARY, open_primary};
+
+    #[test]
+    fn a_point_belongs_to_the_monitor_whose_area_holds_it() {
+        let side_by_side = [RECT { left: 0, top: 0, right: 2560, bottom: 1440 }, RECT { left: 2560, top: -155, right: 3640, bottom: 1765 }];
+        assert_eq!(monitor_containing((100, 100), &side_by_side), Some(0));
+        assert_eq!(monitor_containing((2559, 1439), &side_by_side), Some(0));
+        assert_eq!(monitor_containing((2560, 0), &side_by_side), Some(1));
+        assert_eq!(monitor_containing((3000, -100), &side_by_side), Some(1));
+        assert_eq!(monitor_containing((3640, 0), &side_by_side), None, "the right edge belongs to no monitor");
+        assert_eq!(monitor_containing((100, 1500), &side_by_side), None, "below the first monitor");
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop with a second monitor; run with --ignored"]
+    fn a_turned_second_monitor_is_read_the_right_way_round() {
+        let _alone = crate::desktop::ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let second = MonitorId(1);
+        let Ok(bounds) = monitor_bounds(second) else {
+            return;
+        };
+        let earlier = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        let patch = crate::overlay::tests::white_patch(bounds.left + 100, bounds.top + 200, 300, 150);
+        unsafe { SetThreadDpiAwarenessContext(earlier) };
+        std::thread::sleep(Duration::from_millis(300));
+
+        let mut capturer = ScreenCapturer::open(second).unwrap();
+        let (width, height) = capturer.monitor_size();
+        let inside_the_patch = capturer.capture(region(second, 110, 210, 280, 130));
+        let whole = capturer.capture(region(second, 0, 0, width, height)).map(|pixels| pixels.len());
+        unsafe { windows::Win32::UI::WindowsAndMessaging::DestroyWindow(patch) }.unwrap();
+
+        assert_eq!((width as i32, height as i32), (bounds.right - bounds.left, bounds.bottom - bounds.top));
+        assert_eq!(whole, Ok((width * height) as usize));
+        let darkest = *inside_the_patch.unwrap().iter().flatten().min().unwrap();
+        assert_eq!(darkest, 255, "the white window was not where the capture looked");
+    }
 
     fn region(monitor: MonitorId, x: i32, y: i32, width: u32, height: u32) -> ScreenRect {
         ScreenRect { monitor, x, y, width, height }

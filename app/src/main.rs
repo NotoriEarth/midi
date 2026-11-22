@@ -15,13 +15,13 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use gif_win::{HotkeyTaken, Hotkeys, KeyCombo, cancel_selection, local_time, monitor_size};
+use gif_win::{HotkeyTaken, Hotkeys, KeyCombo, cancel_selection, local_time, monitor_at_cursor, monitor_size};
 use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
 
 use choice::QualityChoice;
-use screen::{ALREADY_RECORDING, PRIMARY, Pick, Recorded, Recorder, RecordingEvent};
+use screen::{ALREADY_RECORDING, Pick, Recorded, Recorder, RecordingEvent};
 use settings::{RecordControl, RecordSettings, Selection};
 use tray::{TrayAction, TrayState};
 
@@ -149,14 +149,15 @@ fn region_file(app: &AppHandle) -> Option<PathBuf> {
 }
 
 fn pick_for(app: &AppHandle, settings: RecordSettings) -> Pick {
+    let monitor = monitor_at_cursor();
     match settings.selection {
-        Selection::Drag if settings.record_control == RecordControl::Button => Pick::DragThenFrame,
-        Selection::Drag => Pick::Drag,
+        Selection::Drag if settings.record_control == RecordControl::Button => Pick::DragThenFrame(monitor),
+        Selection::Drag => Pick::Drag(monitor),
         Selection::Frame => {
             let last = region_file(app).and_then(|file| settings::load_region(&file));
-            match monitor_size(PRIMARY) {
-                Ok(size) => Pick::Frame(gif_core::selection::frame_start(last, PRIMARY, size)),
-                Err(_) => Pick::Drag,
+            match monitor_size(monitor) {
+                Ok(size) => Pick::Frame(gif_core::selection::frame_start(last, monitor, size)),
+                Err(_) => Pick::Drag(monitor),
             }
         }
     }
@@ -292,8 +293,8 @@ fn record_and_save(app: &AppHandle, settings: RecordSettings) -> Result<Option<V
     };
     let pick = pick_for(app, settings);
     let how = match pick {
-        Pick::Drag => "drag",
-        Pick::DragThenFrame => "dragThenFrame",
+        Pick::Drag(_) => "drag",
+        Pick::DragThenFrame(_) => "dragThenFrame",
         Pick::Frame(_) => "frame",
     };
     let _ = app.emit(SELECTION_STARTED, how);
