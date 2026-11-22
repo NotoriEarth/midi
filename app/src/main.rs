@@ -4,9 +4,9 @@ mod choice;
 mod sample;
 mod save;
 mod screen;
+mod settings;
 
 use gif_core::fit::LEVELS;
-use gif_core::resize::OutputSize;
 use gif_core::hotkey::Hotkey;
 use gif_core::session::ScreenRect;
 use std::cell::Cell;
@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use choice::QualityChoice;
 use screen::Recorder;
+use settings::RecordSettings;
 
 #[tauri::command]
 fn quality_levels() -> Vec<(usize, u8)> {
@@ -56,6 +57,27 @@ fn show_saved_gif(last: State<LastSaved>) -> Result<(), String> {
     let mut select = std::ffi::OsString::from("/select,");
     select.push(path);
     Command::new("explorer").arg(select).spawn().map(drop).map_err(|error| format!("탐색기를 열지 못했습니다: {error}"))
+}
+
+const SETTINGS_FILE: &str = "settings.json";
+
+fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let folder = app.path().app_config_dir().map_err(|error| format!("설정 폴더를 찾지 못했습니다: {error}"))?;
+    Ok(folder.join(SETTINGS_FILE))
+}
+
+#[tauri::command]
+fn saved_settings(app: AppHandle) -> RecordSettings {
+    settings_file(&app).map(|file| settings::load(&file)).unwrap_or_default()
+}
+
+#[tauri::command]
+fn remember_settings(app: AppHandle, settings: RecordSettings) -> Result<(), String> {
+    if !settings.can_record() {
+        return Ok(());
+    }
+    let file = settings_file(&app)?;
+    settings::store(&file, settings).map_err(|error| format!("설정을 {}에 저장하지 못했습니다: {error}", file.display()))
 }
 
 const BEGIN_KEY: u32 = 1;
@@ -95,14 +117,6 @@ fn begin_hotkey(begin: State<BeginHotkey>) -> Result<String, String> {
     })
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RecordSettings {
-    fps: u32,
-    quality: QualityChoice,
-    fit_within: Option<(u32, u32)>,
-}
-
 #[tauri::command(async)]
 fn record_screen_gif(
     window: WebviewWindow,
@@ -119,12 +133,7 @@ fn record_screen_gif(
         let _ = hotkeys.register(STOP_KEY, KeyCombo::ENTER);
         let _ = window.emit(RECORDING_STARTED, ((region.width, region.height), output_size));
     };
-    let size = match settings.fit_within {
-        Some((width, height)) => OutputSize::FitWithin { width, height },
-        None => OutputSize::Original,
-    };
-    let encode_settings = settings.quality.settings(settings.fit_within.is_some())?;
-    let encoded = recorder.record(settings.fps, encode_settings, size, tell_the_page)?;
+    let encoded = recorder.record(settings.fps, settings.encode_settings()?, settings.output_size(), tell_the_page)?;
     if let Some(encoded) = &encoded {
         let final_size = (encoded.width, encoded.height);
         let _ = window.emit(GIF_ENCODED, (encoded.level, encoded.within_limit, recorded_size.get(), final_size));
@@ -162,7 +171,7 @@ fn main() {
             app.manage(hotkeys);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![make_sample_gif, record_screen_gif, stop_recording, cancel_recording, begin_hotkey, show_saved_gif, quality_levels])
+        .invoke_handler(tauri::generate_handler![make_sample_gif, record_screen_gif, stop_recording, cancel_recording, begin_hotkey, show_saved_gif, quality_levels, saved_settings, remember_settings])
         .run(tauri::generate_context!())
         .expect("the app window can be created");
 }

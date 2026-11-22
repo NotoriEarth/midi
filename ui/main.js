@@ -76,6 +76,32 @@ function fitWithin() {
   return sizeIsFixed() ? [Number(sizeWidth.value), Number(sizeHeight.value)] : null;
 }
 
+function settings() {
+  return { fps: Number(fps.value), quality: quality(), fitWithin: fitWithin() };
+}
+
+function showLimit(bytes) {
+  if (bytes === null) {
+    maxSize.value = "";
+    return;
+  }
+  const megabytes = String(Number((bytes / BYTES_PER_MB).toFixed(2)));
+  const listed = [...maxSize.options].some((option) => option.value === megabytes);
+  maxSize.value = listed ? megabytes : "custom";
+  if (!listed) maxSizeCustom.value = megabytes;
+}
+
+function showSettings(saved) {
+  fps.value = String(saved.fps);
+  sizeMode.value = saved.fitWithin ? "fit" : "original";
+  if (saved.fitWithin) [sizeWidth.value, sizeHeight.value] = saved.fitWithin;
+  level.value = saved.quality.level === null ? "" : String(saved.quality.level);
+  showLimit(saved.quality.maxBytes);
+  dither.value = String(saved.quality.dither);
+  ditherValue.textContent = dither.value;
+  showChoices();
+}
+
 function showRecording(now) {
   recording = now;
   record.textContent = now ? "끝" : "녹화 시작";
@@ -120,8 +146,7 @@ record.addEventListener("click", async () => {
     return;
   }
   record.disabled = true;
-  const settings = { fps: Number(fps.value), quality: quality(), fitWithin: fitWithin() };
-  await showGif("record_screen_gif", { settings }, "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.");
+  await showGif("record_screen_gif", { settings: settings() }, "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.");
   record.disabled = false;
   showRecording(false);
 });
@@ -172,11 +197,15 @@ listen("begin-selection", () => {
 const ditherValue = document.querySelector("#dither-value");
 dither.addEventListener("input", () => (ditherValue.textContent = dither.value));
 for (const choice of [sizeMode, level, maxSize]) choice.addEventListener("change", showChoices);
+form.addEventListener("change", () => {
+  invoke("remember_settings", { settings: settings() }).catch((problem) => (status.textContent = problem));
+});
 showChoices();
 
-invoke("quality_levels").then((fromRust) => {
+Promise.all([invoke("quality_levels"), invoke("saved_settings")]).then(([fromRust, saved]) => {
   levels = fromRust;
   levels.forEach((_, index) => level.add(new Option(describeLevel(index + 1), String(index + 1))));
+  showSettings(saved);
 });
 
 invoke("begin_hotkey").then(

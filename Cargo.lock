@@ -1929,6 +1929,7 @@ dependencies = [
  "gif-core",
  "gif-win",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
 ]

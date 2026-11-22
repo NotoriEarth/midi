@@ -1,11 +1,17 @@
 use gif_core::fit::{Adjust, BEST_LEVEL, EncodeSettings, Quality};
 
-#[derive(Debug, Clone, Copy, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct QualityChoice {
     pub level: Option<usize>,
     pub max_bytes: Option<usize>,
     pub dither: f32,
+}
+
+impl Default for QualityChoice {
+    fn default() -> Self {
+        Self { level: None, max_bytes: None, dither: 1.0 }
+    }
 }
 
 pub const NOTHING_TO_ADJUST: &str =
