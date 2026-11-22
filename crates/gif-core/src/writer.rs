@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use crate::diff::{FramePatch, changed_patch};
-use crate::{GifFps, frame_delays};
+use crate::GifFps;
+use crate::delay::frame_delay;
 
 pub type Rgb = [u8; 3];
 
@@ -21,43 +22,83 @@ pub fn write_gif(
     frames: &[&[u8]],
     fps: GifFps,
 ) -> Result<Vec<u8>, GifWriteError> {
-    write_gif_reporting(width, height, palette, frames, fps, &mut || {})
-}
-
-pub fn write_gif_reporting(
-    width: u16,
-    height: u16,
-    palette: &[Rgb],
-    frames: &[&[u8]],
-    fps: GifFps,
-    on_frame_written: &mut dyn FnMut(),
-) -> Result<Vec<u8>, GifWriteError> {
     let pixel_count = usize::from(width) * usize::from(height);
     check_input(pixel_count, palette, frames)?;
 
-    let transparent = palette.len() as u8;
-    let table_bits = color_table_bits(palette.len() + 1);
-    let min_code_size = table_bits.max(2);
-    let delays = frame_delays(fps, frames.len());
-    let row_width = usize::from(width);
-
-    let first = FramePatch::whole_frame(frames[0], row_width);
-    let later = frames.windows(2).map(|pair| changed_patch(pair[0], pair[1], row_width, transparent));
-    let patches = std::iter::once(first).chain(later);
-
-    let mut out = Vec::new();
-    write_header(&mut out, width, height, table_bits);
-    write_color_table(&mut out, palette, table_bits);
-    write_loop_forever(&mut out);
-    for (patch, delay) in patches.zip(delays) {
-        write_frame_control(&mut out, delay, transparent);
-        write_image_position(&mut out, &patch);
-        out.push(min_code_size);
-        write_sub_blocks(&mut out, &lzw(&patch.pixels, min_code_size));
-        on_frame_written();
+    let mut writer = GifWriter::new(width, height, palette, fps)?;
+    for frame in frames {
+        writer.add_frame(frame)?;
     }
-    out.push(TRAILER);
-    Ok(out)
+    writer.finish()
+}
+
+#[derive(Debug, Clone)]
+pub struct GifWriter {
+    out: Vec<u8>,
+    fps: GifFps,
+    row_width: usize,
+    pixel_count: usize,
+    palette_len: usize,
+    min_code_size: u8,
+    frames_written: usize,
+    last_frame: Vec<u8>,
+}
+
+impl GifWriter {
+    pub fn new(width: u16, height: u16, palette: &[Rgb], fps: GifFps) -> Result<Self, GifWriteError> {
+        let pixel_count = usize::from(width) * usize::from(height);
+        if pixel_count == 0 {
+            return Err(GifWriteError::EmptyImage);
+        }
+        if palette.is_empty() || palette.len() > MAX_PALETTE_COLORS {
+            return Err(GifWriteError::PaletteSize(palette.len()));
+        }
+
+        let table_bits = color_table_bits(palette.len() + 1);
+        let mut out = Vec::new();
+        write_header(&mut out, width, height, table_bits);
+        write_color_table(&mut out, palette, table_bits);
+        write_loop_forever(&mut out);
+        Ok(Self {
+            out,
+            fps,
+            row_width: usize::from(width),
+            pixel_count,
+            palette_len: palette.len(),
+            min_code_size: table_bits.max(2),
+            frames_written: 0,
+            last_frame: Vec::new(),
+        })
+    }
+
+    pub fn add_frame(&mut self, indices: &[u8]) -> Result<(), GifWriteError> {
+        let frame = self.frames_written;
+        check_frame(frame, indices, self.pixel_count, self.palette_len)?;
+
+        let transparent = self.palette_len as u8;
+        let patch = if frame == 0 {
+            FramePatch::whole_frame(indices, self.row_width)
+        } else {
+            changed_patch(&self.last_frame, indices, self.row_width, transparent)
+        };
+        write_frame_control(&mut self.out, frame_delay(self.fps, frame), transparent);
+        write_image_position(&mut self.out, &patch);
+        self.out.push(self.min_code_size);
+        write_sub_blocks(&mut self.out, &lzw(&patch.pixels, self.min_code_size));
+
+        self.last_frame.clear();
+        self.last_frame.extend_from_slice(indices);
+        self.frames_written += 1;
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<Vec<u8>, GifWriteError> {
+        if self.frames_written == 0 {
+            return Err(GifWriteError::NoFrames);
+        }
+        self.out.push(TRAILER);
+        Ok(self.out)
+    }
 }
 
 const EXTENSION: u8 = 0x21;
@@ -79,16 +120,17 @@ fn check_input(pixel_count: usize, palette: &[Rgb], frames: &[&[u8]]) -> Result<
         return Err(GifWriteError::PaletteSize(palette.len()));
     }
     for (frame, pixels) in frames.iter().enumerate() {
-        if pixels.len() != pixel_count {
-            return Err(GifWriteError::FrameSize {
-                frame,
-                expected: pixel_count,
-                actual: pixels.len(),
-            });
-        }
-        if let Some(&index) = pixels.iter().find(|&&index| usize::from(index) >= palette.len()) {
-            return Err(GifWriteError::ColorOutOfPalette { frame, index });
-        }
+        check_frame(frame, pixels, pixel_count, palette.len())?;
+    }
+    Ok(())
+}
+
+fn check_frame(frame: usize, pixels: &[u8], pixel_count: usize, palette_len: usize) -> Result<(), GifWriteError> {
+    if pixels.len() != pixel_count {
+        return Err(GifWriteError::FrameSize { frame, expected: pixel_count, actual: pixels.len() });
+    }
+    if let Some(&index) = pixels.iter().find(|&&index| usize::from(index) >= palette_len) {
+        return Err(GifWriteError::ColorOutOfPalette { frame, index });
     }
     Ok(())
 }

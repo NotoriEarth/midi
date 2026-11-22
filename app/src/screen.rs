@@ -129,7 +129,7 @@ impl Recorder {
         let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
         let mut on_step = |step| on_event(RecordingEvent::Encoding(step));
         let (width, height) = (output_size.0 as u16, output_size.1 as u16);
-        let encoded = encode(width, height, &frames, fps, settings, &mut on_step).map_err(explain_encode)?;
+        let encoded = encode(width, height, &mut &frames[..], fps, settings, &mut on_step).map_err(explain_encode)?;
         Ok(Some(Recorded { encoded, ended_at_limit: ending == Ending::AtLimit }))
     }
 

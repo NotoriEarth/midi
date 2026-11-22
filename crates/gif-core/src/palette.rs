@@ -20,8 +20,18 @@ impl Palette {
         if !(1..=Self::MAX_COLORS).contains(&max_colors) {
             return Err(PaletteError::ColorLimit(max_colors));
         }
+        let mut counts = ColorCounts::new();
+        for frame in frames {
+            counts.add(frame);
+        }
+        Self::from_counts(&counts, max_colors)
+    }
 
-        let every_color = count_colors(frames);
+    pub fn from_counts(counts: &ColorCounts, max_colors: usize) -> Result<Palette, PaletteError> {
+        if !(1..=Self::MAX_COLORS).contains(&max_colors) {
+            return Err(PaletteError::ColorLimit(max_colors));
+        }
+        let every_color = counts.in_color_order();
         if every_color.is_empty() {
             return Err(PaletteError::NoPixels);
         }
@@ -95,14 +105,31 @@ fn color_of(slot: usize) -> Rgb {
     [(slot >> 16) as u8, (slot >> 8) as u8, slot as u8]
 }
 
-fn count_colors(frames: &[&[Rgb]]) -> Vec<CountedColor> {
-    let mut counts = vec![0u32; EVERY_RGB_COLOR];
-    for &pixel in frames.iter().copied().flatten() {
-        let count = &mut counts[slot_of(pixel)];
-        *count = count.saturating_add(1);
+#[derive(Debug, Clone)]
+pub struct ColorCounts(Vec<u32>);
+
+impl ColorCounts {
+    pub fn new() -> Self {
+        Self(vec![0; EVERY_RGB_COLOR])
     }
-    let seen = counts.iter().enumerate().filter(|&(_, &count)| count > 0);
-    seen.map(|(slot, &count)| (color_of(slot), u64::from(count))).collect()
+
+    pub fn add(&mut self, pixels: &[Rgb]) {
+        for &pixel in pixels {
+            let count = &mut self.0[slot_of(pixel)];
+            *count = count.saturating_add(1);
+        }
+    }
+
+    fn in_color_order(&self) -> Vec<CountedColor> {
+        let seen = self.0.iter().enumerate().filter(|&(_, &count)| count > 0);
+        seen.map(|(slot, &count)| (color_of(slot), u64::from(count))).collect()
+    }
+}
+
+impl Default for ColorCounts {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn squared_distance(a: Rgb, b: Rgb) -> u32 {
@@ -287,8 +314,23 @@ mod tests {
     fn colors_are_counted_in_order_with_how_often_each_appears() {
         let first = [[0, 0, 255], [255, 0, 0], [0, 0, 255]];
         let second = [[0, 1, 0], [0, 0, 255]];
-        let counted = count_colors(&[&first, &second]);
-        assert_eq!(counted, [([0, 0, 255], 3), ([0, 1, 0], 1), ([255, 0, 0], 1)]);
+        let mut counts = ColorCounts::new();
+        counts.add(&first);
+        counts.add(&second);
+        assert_eq!(counts.in_color_order(), [([0, 0, 255], 3), ([0, 1, 0], 1), ([255, 0, 0], 1)]);
+    }
+
+    #[test]
+    fn counting_frame_by_frame_chooses_the_same_palette_as_all_frames_at_once() {
+        let pixels = many_colors();
+        let (first, second) = pixels.split_at(1234);
+        let mut counts = ColorCounts::new();
+        counts.add(first);
+        counts.add(second);
+
+        assert_eq!(Palette::from_counts(&counts, 32), Palette::from_frames(&[first, second], 32));
+        assert_eq!(Palette::from_counts(&ColorCounts::new(), 32), Err(PaletteError::NoPixels));
+        assert_eq!(Palette::from_counts(&counts, 256), Err(PaletteError::ColorLimit(256)));
     }
 
     #[test]

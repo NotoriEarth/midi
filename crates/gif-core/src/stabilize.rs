@@ -1,17 +1,36 @@
 use crate::writer::Rgb;
 
-pub fn stabilize(frames: &[&[Rgb]], tolerance: u8) -> Vec<Vec<Rgb>> {
-    let mut shown: Vec<Vec<Rgb>> = Vec::with_capacity(frames.len());
-    for frame in frames {
-        let next = match shown.last() {
-            Some(on_screen) => {
-                frame.iter().zip(on_screen).map(|(new, old)| if close(new, old, tolerance) { *old } else { *new }).collect()
-            }
-            None => frame.to_vec(),
-        };
-        shown.push(next);
+#[derive(Debug, Clone)]
+pub struct Stabilizer {
+    tolerance: u8,
+    on_screen: Option<Vec<Rgb>>,
+}
+
+impl Stabilizer {
+    pub fn new(tolerance: u8) -> Self {
+        Self { tolerance, on_screen: None }
     }
-    shown
+
+    pub fn show(&mut self, frame: &[Rgb]) -> &[Rgb] {
+        let tolerance = self.tolerance;
+        match &mut self.on_screen {
+            Some(on_screen) => {
+                on_screen.truncate(frame.len());
+                for (old, new) in on_screen.iter_mut().zip(frame) {
+                    if !close(new, old, tolerance) {
+                        *old = *new;
+                    }
+                }
+                on_screen
+            }
+            none => none.insert(frame.to_vec()),
+        }
+    }
+}
+
+pub fn stabilize(frames: &[&[Rgb]], tolerance: u8) -> Vec<Vec<Rgb>> {
+    let mut stabilizer = Stabilizer::new(tolerance);
+    frames.iter().map(|frame| stabilizer.show(frame).to_vec()).collect()
 }
 
 fn close(a: &Rgb, b: &Rgb, tolerance: u8) -> bool {

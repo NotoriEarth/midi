@@ -1,8 +1,8 @@
 use crate::GifFps;
 use crate::dither::ordered_dither;
-use crate::palette::Palette;
-use crate::stabilize::stabilize;
-use crate::writer::{Rgb, write_gif_reporting};
+use crate::palette::{ColorCounts, Palette};
+use crate::stabilize::Stabilizer;
+use crate::writer::{GifWriter, Rgb};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ManualSettings {
@@ -21,6 +21,30 @@ pub enum EncodeError {
     Tolerance(u8),
     SizeLimit(usize),
     Level(usize),
+    FrameUnreadable { frame: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameError {
+    Unreadable,
+    PixelCount { expected: usize, actual: usize },
+}
+
+pub trait FrameSource {
+    fn frame_count(&self) -> usize;
+    fn read_frame(&mut self, index: usize, pixels: &mut Vec<Rgb>) -> Result<(), FrameError>;
+}
+
+impl FrameSource for &[&[Rgb]] {
+    fn frame_count(&self) -> usize {
+        self.len()
+    }
+
+    fn read_frame(&mut self, index: usize, pixels: &mut Vec<Rgb>) -> Result<(), FrameError> {
+        pixels.clear();
+        pixels.extend_from_slice(self[index]);
+        Ok(())
+    }
 }
 
 impl ManualSettings {
@@ -51,69 +75,76 @@ pub struct Progress {
 pub fn encode_gif(
     width: u16,
     height: u16,
-    frames: &[&[Rgb]],
+    mut frames: &[&[Rgb]],
     fps: GifFps,
     settings: ManualSettings,
 ) -> Result<Vec<u8>, EncodeError> {
-    encode_gif_reporting(width, height, frames, fps, settings, &mut |_| {})
+    encode_frames(width, height, &mut frames, fps, settings, &mut |_| {})
 }
 
-pub fn encode_gif_reporting(
+pub fn encode_frames(
     width: u16,
     height: u16,
-    frames: &[&[Rgb]],
+    frames: &mut dyn FrameSource,
     fps: GifFps,
     settings: ManualSettings,
     on_progress: &mut dyn FnMut(Progress),
 ) -> Result<Vec<u8>, EncodeError> {
-    check_input(width, height, frames, settings)?;
-    let mut progress = Progress { done: 0, total: frames.len() * 2 };
+    settings.check()?;
+    let pixel_count = usize::from(width) * usize::from(height);
+    if pixel_count == 0 {
+        return Err(EncodeError::EmptyImage);
+    }
+    let frame_count = frames.frame_count();
+    if frame_count == 0 {
+        return Err(EncodeError::NoFrames);
+    }
+
+    let mut progress = Progress { done: 0, total: frame_count * 2 };
     let mut one_more_step = || {
         progress.done += 1;
         on_progress(progress);
     };
+    let mut frame = Vec::new();
 
-    let steady = stabilize(frames, settings.tolerance);
-    let steady: Vec<&[Rgb]> = steady.iter().map(Vec::as_slice).collect();
-    let frames = &steady[..];
-
-    let palette = Palette::from_frames(frames, settings.colors)
+    let mut counts = ColorCounts::new();
+    let mut steady = Stabilizer::new(settings.tolerance);
+    for index in 0..frame_count {
+        read(frames, index, pixel_count, &mut frame)?;
+        counts.add(steady.show(&frame));
+        one_more_step();
+    }
+    let palette = Palette::from_counts(&counts, settings.colors)
         .expect("the color limit is in range and the frames have pixels");
-    let mut nearest = palette.lookup();
-    let indexed: Vec<Vec<u8>> = frames
-        .iter()
-        .map(|frame| {
-            let indices = ordered_dither(&mut nearest, frame, usize::from(width), settings.dither)
-                .expect("every frame is width x height pixels");
-            one_more_step();
-            indices
-        })
-        .collect();
-    let indexed: Vec<&[u8]> = indexed.iter().map(Vec::as_slice).collect();
+    drop(counts);
 
-    let bytes = write_gif_reporting(width, height, palette.colors(), &indexed, fps, &mut one_more_step)
-        .expect("the indices come from the palette and the frames fit the size");
-    Ok(bytes)
+    let mut steady = Stabilizer::new(settings.tolerance);
+    let mut nearest = palette.lookup();
+    let mut writer = GifWriter::new(width, height, palette.colors(), fps)
+        .expect("the size is not empty and the palette has 1 to 255 colors");
+    for index in 0..frame_count {
+        read(frames, index, pixel_count, &mut frame)?;
+        let indices = ordered_dither(&mut nearest, steady.show(&frame), usize::from(width), settings.dither)
+            .expect("every frame is width x height pixels");
+        writer.add_frame(&indices).expect("the indices come from the palette and the frame fits the size");
+        one_more_step();
+    }
+    Ok(writer.finish().expect("at least one frame was written"))
 }
 
-fn check_input(
-    width: u16,
-    height: u16,
-    frames: &[&[Rgb]],
-    settings: ManualSettings,
+fn read(
+    frames: &mut dyn FrameSource,
+    frame: usize,
+    pixel_count: usize,
+    pixels: &mut Vec<Rgb>,
 ) -> Result<(), EncodeError> {
-    settings.check()?;
-
-    let expected = usize::from(width) * usize::from(height);
-    if expected == 0 {
-        return Err(EncodeError::EmptyImage);
-    }
-    if frames.is_empty() {
-        return Err(EncodeError::NoFrames);
-    }
-    match frames.iter().position(|frame| frame.len() != expected) {
-        Some(frame) => Err(EncodeError::FrameSize { frame, expected, actual: frames[frame].len() }),
-        None => Ok(()),
+    match frames.read_frame(frame, pixels) {
+        Err(FrameError::Unreadable) => Err(EncodeError::FrameUnreadable { frame }),
+        Err(FrameError::PixelCount { expected, actual }) => Err(EncodeError::FrameSize { frame, expected, actual }),
+        Ok(()) if pixels.len() != pixel_count => {
+            Err(EncodeError::FrameSize { frame, expected: pixel_count, actual: pixels.len() })
+        }
+        Ok(()) => Ok(()),
     }
 }
 
@@ -134,28 +165,62 @@ mod tests {
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
         let mut reported = Vec::new();
 
-        encode_gif_reporting(8, 6, &slices, GifFps::Fps10, SHARP, &mut |progress| reported.push(progress)).unwrap();
+        encode_frames(8, 6, &mut &slices[..], GifFps::Fps10, SHARP, &mut |progress| reported.push(progress)).unwrap();
 
-        let dithering_and_writing_each_frame = 10;
-        let expected: Vec<Progress> =
-            (1..=dithering_and_writing_each_frame).map(|done| Progress { done, total: 10 }).collect();
+        let reading_each_frame_twice = 10;
+        let expected: Vec<Progress> = (1..=reading_each_frame_twice).map(|done| Progress { done, total: 10 }).collect();
         assert_eq!(reported, expected);
     }
 
+    struct MadeOnDemand {
+        frame_count: usize,
+        unreadable: Option<usize>,
+        reads: Vec<usize>,
+    }
+
+    impl FrameSource for MadeOnDemand {
+        fn frame_count(&self) -> usize {
+            self.frame_count
+        }
+
+        fn read_frame(&mut self, index: usize, pixels: &mut Vec<Rgb>) -> Result<(), FrameError> {
+            self.reads.push(index);
+            if self.unreadable == Some(index) {
+                return Err(FrameError::Unreadable);
+            }
+            pixels.clear();
+            pixels.extend_from_slice(&five_small_frames()[index]);
+            Ok(())
+        }
+    }
+
     #[test]
-    fn reporting_progress_does_not_change_the_file() {
+    fn frames_that_exist_one_at_a_time_give_the_same_file_as_frames_held_together() {
         let frames = five_small_frames();
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
+        let lossy = ManualSettings { colors: 16, dither: 1.0, tolerance: 8 };
+        let mut on_demand = MadeOnDemand { frame_count: 5, unreadable: None, reads: Vec::new() };
 
-        let reporting = encode_gif_reporting(8, 6, &slices, GifFps::Fps10, SHARP, &mut |_| {});
+        let streamed = encode_frames(8, 6, &mut on_demand, GifFps::Fps10, lossy, &mut |_| {});
 
-        assert_eq!(reporting, encode_gif(8, 6, &slices, GifFps::Fps10, SHARP));
+        assert_eq!(streamed, encode_gif(8, 6, &slices, GifFps::Fps10, lossy));
+        assert_eq!(on_demand.reads, [0, 1, 2, 3, 4, 0, 1, 2, 3, 4], "once to choose colors, once to write");
+    }
+
+    #[test]
+    fn a_frame_that_cannot_be_read_stops_the_encode_and_names_the_frame() {
+        let mut broken = MadeOnDemand { frame_count: 5, unreadable: Some(3), reads: Vec::new() };
+
+        let stopped = encode_frames(8, 6, &mut broken, GifFps::Fps10, SHARP, &mut |_| {});
+
+        assert_eq!(stopped, Err(EncodeError::FrameUnreadable { frame: 3 }));
+        assert_eq!(broken.reads, [0, 1, 2, 3]);
     }
 
     #[test]
     fn input_that_is_refused_reports_no_progress() {
         let mut reported = Vec::new();
-        let refused = encode_gif_reporting(8, 6, &[], GifFps::Fps10, SHARP, &mut |progress| reported.push(progress));
+        let refused = encode_frames(8, 6, &mut &[][..], GifFps::Fps10, SHARP, &mut |progress| reported.push(progress));
         assert_eq!((refused, reported), (Err(EncodeError::NoFrames), vec![]));
     }
 

@@ -3,15 +3,16 @@ use crate::GifFps;
 const CENTISECONDS_PER_SECOND: u64 = 100;
 
 pub fn frame_delays(fps: GifFps, frame_count: usize) -> Vec<u16> {
+    (0..frame_count).map(|index| frame_delay(fps, index)).collect()
+}
+
+pub fn frame_delay(fps: GifFps, index: usize) -> u16 {
     let fps = u64::from(fps.per_second());
     let end_of_frame = |index: u64| (index + 1) * CENTISECONDS_PER_SECOND / fps;
 
-    (0..frame_count as u64)
-        .map(|index| {
-            let start = if index == 0 { 0 } else { end_of_frame(index - 1) };
-            (end_of_frame(index) - start) as u16
-        })
-        .collect()
+    let index = index as u64;
+    let start = if index == 0 { 0 } else { end_of_frame(index - 1) };
+    (end_of_frame(index) - start) as u16
 }
 
 #[cfg(test)]

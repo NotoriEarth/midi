@@ -17,7 +17,7 @@ pub fn encode(fps: u32, settings: EncodeSettings) -> Result<Vec<u8>, String> {
     let frames: Vec<Vec<Rgb>> = (0..frame_count).map(|number| frame(number, frame_count)).collect();
     let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
 
-    let encoded = fit::encode(WIDTH as u16, HEIGHT as u16, &frames, fps, settings, &mut |_| {});
+    let encoded = fit::encode(WIDTH as u16, HEIGHT as u16, &mut &frames[..], fps, settings, &mut |_| {});
     encoded.map(|encoded| encoded.gif).map_err(explain_encode)
 }
 
@@ -31,6 +31,7 @@ pub fn explain_encode(error: EncodeError) -> String {
         EncodeError::Level(level) => format!("화질 단계는 1~{} 사이여야 합니다: {level}", LEVELS.len()),
         EncodeError::Dither(dither) => format!("디더링 강도는 0~1 사이여야 합니다: {dither}"),
         EncodeError::SizeLimit(bytes) => format!("용량 목표는 1바이트 이상이어야 합니다: {bytes}"),
+        EncodeError::FrameUnreadable { frame } => format!("녹화해 둔 {}번째 프레임을 읽지 못했습니다.", frame + 1),
         EncodeError::NoFrames => "녹화된 프레임이 없습니다. 조금 더 길게 녹화하세요.".to_string(),
         other => format!("GIF를 만들지 못했습니다: {other:?}"),
     }

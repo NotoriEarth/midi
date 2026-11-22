@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use gif_core::GifFps;
 use gif_core::dither::ordered_dither;
+use gif_core::encode::{ManualSettings, encode_gif};
 use gif_core::fit::LEVELS;
 use gif_core::palette::Palette;
 use gif_core::session::{MonitorId, ScreenRect};
@@ -35,12 +36,20 @@ fn main() {
     let mut capturer = ScreenCapturer::open(monitor).expect("the primary monitor can be captured");
     let first = capturer.capture(ScreenRect { monitor, x: 0, y: 0, width, height }).expect("the region is on the monitor");
     let frames: Vec<Vec<Rgb>> = (0..frame_count as usize)
-        .map(|frame| if motion == "still" { first.clone() } else { scrolled(&first, width as usize, frame) })
+        .map(|frame| if motion.starts_with("still") { first.clone() } else { scrolled(&first, width as usize, frame) })
         .collect();
     let frames: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
 
     let megapixels = f64::from(width * height * frame_count) / 1e6;
     println!("{width}x{height}, {frame_count} frames at {per_second}fps, {motion}: {megapixels:.0} megapixels in all");
+
+    if motion.ends_with("-whole") {
+        let level = LEVELS[0];
+        let settings = ManualSettings { colors: level.colors, dither: 1.0, tolerance: level.tolerance };
+        let (gif, whole) = timed(|| encode_gif(width as u16, height as u16, &frames, fps, settings).expect("a GIF"));
+        println!("  level 1 in one call: {:.2}s, {} bytes", whole.as_secs_f64(), gif.len());
+        return;
+    }
 
     for (number, level) in [(1, LEVELS[0]), (6, LEVELS[5])] {
         let (steady, stabilizing) = timed(|| stabilize(&frames, level.tolerance));

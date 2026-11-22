@@ -1,5 +1,5 @@
 use crate::GifFps;
-use crate::encode::{EncodeError, ManualSettings, Progress, encode_gif_reporting};
+use crate::encode::{EncodeError, FrameError, FrameSource, ManualSettings, Progress, encode_frames};
 use crate::resize::{downscale, scale_by_percent};
 use crate::writer::Rgb;
 
@@ -95,7 +95,7 @@ impl EncodeSettings {
 pub fn encode(
     width: u16,
     height: u16,
-    frames: &[&[Rgb]],
+    frames: &mut dyn FrameSource,
     fps: GifFps,
     settings: EncodeSettings,
     on_step: &mut dyn FnMut(Step),
@@ -126,7 +126,7 @@ pub fn encode(
 fn encode_candidate(
     width: u16,
     height: u16,
-    frames: &[&[Rgb]],
+    frames: &mut dyn FrameSource,
     fps: GifFps,
     settings: EncodeSettings,
     candidate: Candidate,
@@ -143,20 +143,33 @@ fn encode_candidate(
 
     let from = (u32::from(width), u32::from(height));
     if candidate.scale_percent == FULL_SIZE {
-        return Ok(encoded(encode_gif_reporting(width, height, frames, fps, manual, on_progress)?, from));
+        return Ok(encoded(encode_frames(width, height, frames, fps, manual, on_progress)?, from));
     }
 
     let to = scale_by_percent(from, candidate.scale_percent);
-    let expected = usize::from(width) * usize::from(height);
-    let smaller: Vec<Vec<Rgb>> = frames
-        .iter()
-        .enumerate()
-        .map(|(frame, pixels)| {
-            downscale(pixels, from, to).map_err(|_| EncodeError::FrameSize { frame, expected, actual: pixels.len() })
-        })
-        .collect::<Result<_, _>>()?;
-    let smaller: Vec<&[Rgb]> = smaller.iter().map(Vec::as_slice).collect();
-    Ok(encoded(encode_gif_reporting(to.0 as u16, to.1 as u16, &smaller, fps, manual, on_progress)?, to))
+    let mut smaller = Shrunk { frames, from, to, full_size: Vec::new() };
+    Ok(encoded(encode_frames(to.0 as u16, to.1 as u16, &mut smaller, fps, manual, on_progress)?, to))
+}
+
+struct Shrunk<'a> {
+    frames: &'a mut dyn FrameSource,
+    from: (u32, u32),
+    to: (u32, u32),
+    full_size: Vec<Rgb>,
+}
+
+impl FrameSource for Shrunk<'_> {
+    fn frame_count(&self) -> usize {
+        self.frames.frame_count()
+    }
+
+    fn read_frame(&mut self, index: usize, pixels: &mut Vec<Rgb>) -> Result<(), FrameError> {
+        self.frames.read_frame(index, &mut self.full_size)?;
+        let expected = (self.from.0 * self.from.1) as usize;
+        *pixels = downscale(&self.full_size, self.from, self.to)
+            .map_err(|_| FrameError::PixelCount { expected, actual: self.full_size.len() })?;
+        Ok(())
+    }
 }
 
 fn first_fitting<T>(
@@ -290,14 +303,14 @@ mod tests {
     fn encode_film(settings: EncodeSettings) -> Result<Encoded, EncodeError> {
         let frames = noisy_film(64, 48, 6);
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        encode(64, 48, &slices, GifFps::Fps10, settings, &mut |_| {})
+        encode(64, 48, &mut &slices[..], GifFps::Fps10, settings, &mut |_| {})
     }
 
     fn steps_of(settings: EncodeSettings) -> Vec<Step> {
         let frames = noisy_film(64, 48, 6);
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
         let mut steps = Vec::new();
-        encode(64, 48, &slices, GifFps::Fps10, settings, &mut |step| steps.push(step)).unwrap();
+        encode(64, 48, &mut &slices[..], GifFps::Fps10, settings, &mut |step| steps.push(step)).unwrap();
         steps
     }
 
