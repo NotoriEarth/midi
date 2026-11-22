@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use gif_core::GifFps;
+use gif_core::blank::looks_black;
 use gif_core::fit::{EncodeSettings, Encoded, Step, encode};
 use gif_core::resize::{OutputSize, ResizeError};
 use gif_core::session::{MonitorId, ScreenRect};
@@ -63,6 +64,7 @@ pub enum RecordingEvent {
 pub struct Recorded {
     pub encoded: Encoded,
     pub ended_at_limit: bool,
+    pub every_frame_black: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +128,11 @@ impl Recorder {
 
         let not_written = RefCell::new(None);
         let keep_going = || not_written.borrow().is_none() && *self.phase() == Phase::Recording;
+        let saw_a_picture = std::cell::Cell::new(false);
         let keep = |frame: Vec<Rgb>, slot: u32| {
+            if !saw_a_picture.get() && !looks_black(&frame) {
+                saw_a_picture.set(true);
+            }
             if let Err(problem) = spool.push(&frame, slot as usize) {
                 not_written.replace(Some(problem));
             }
@@ -145,7 +151,8 @@ impl Recorder {
         let mut on_step = |step| on_event(RecordingEvent::Encoding(step));
         let (width, height) = (output_size.0 as u16, output_size.1 as u16);
         let encoded = encode(width, height, &mut spool, fps, settings, &mut on_step).map_err(explain_encode)?;
-        Ok(Some(Recorded { encoded, ended_at_limit: ending == Ending::AtLimit }))
+        let every_frame_black = !saw_a_picture.get();
+        Ok(Some(Recorded { encoded, ended_at_limit: ending == Ending::AtLimit, every_frame_black }))
     }
 
     fn phase(&self) -> MutexGuard<'_, Phase> {

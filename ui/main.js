@@ -224,7 +224,7 @@ listen("gif-progress", ({ payload: [attempt, percent] }) => {
   status.textContent = `GIF로 만드는 중… ${percent}%${fitting}`;
 });
 
-listen("gif-encoded", ({ payload: [usedLevel, withinLimit, [width, height], [finalWidth, finalHeight], endedAtLimit] }) => {
+listen("gif-encoded", ({ payload: [usedLevel, withinLimit, [width, height], [finalWidth, finalHeight], endedAtLimit, everyFrameBlack] }) => {
   const shrunk = width !== finalWidth || height !== finalHeight;
   const size = shrunk
     ? `크기 ${width}×${height} → ${finalWidth}×${finalHeight}`
@@ -240,6 +240,11 @@ listen("gif-encoded", ({ payload: [usedLevel, withinLimit, [width, height], [fin
     encoded.textContent = `용량 목표보다 큽니다. 조정할 수 있는 끝까지 낮췄습니다: ${made}. ${advice}`;
   }
   if (endedAtLimit) encoded.textContent += `${encoded.textContent.endsWith(".") ? "" : "."} ${whyItEnded()}`;
+  if (everyFrameBlack) {
+    encoded.textContent +=
+      `${encoded.textContent.endsWith(".") ? "" : "."} 녹화된 화면이 전부 검은색입니다. ` +
+      "넷플릭스 같은 보호된 영상은 화면 캡처가 막혀 있어 검게 찍힙니다.";
+  }
 });
 
 listen("gif-saved", ({ payload }) => {

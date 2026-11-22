@@ -43,6 +43,7 @@ const GIF_SAVED: &str = "gif-saved";
 const GIF_ENCODED: &str = "gif-encoded";
 const GIF_PROGRESS: &str = "gif-progress";
 const SAVE_FOLDER: &str = "midi";
+const BLACK_RECORDING: &str = "녹화된 화면이 전부 검은색입니다. 보호된 영상일 수 있습니다.";
 
 #[derive(Default)]
 struct LastSaved(Mutex<Option<PathBuf>>);
@@ -269,11 +270,11 @@ fn record_and_save(app: &AppHandle, settings: RecordSettings) -> Result<Option<V
     };
     let _ = app.emit(SELECTION_STARTED, ());
     let recorded = recorder.record(settings.fps, encode_settings, settings.output_size(), tell_the_page)?;
-    let Some(Recorded { encoded, ended_at_limit }) = recorded else {
+    let Some(Recorded { encoded, ended_at_limit, every_frame_black }) = recorded else {
         return Ok(None);
     };
     let final_size = (encoded.width, encoded.height);
-    let made = (encoded.level, encoded.within_limit, recorded_size.get(), final_size, ended_at_limit);
+    let made = (encoded.level, encoded.within_limit, recorded_size.get(), final_size, ended_at_limit, every_frame_black);
     let _ = app.emit(GIF_ENCODED, made);
 
     let gif = encoded.gif;
@@ -282,7 +283,10 @@ fn record_and_save(app: &AppHandle, settings: RecordSettings) -> Result<Option<V
     match saved {
         Ok(path) => {
             let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-            let body = format!("{name} ({}바이트). 트레이 메뉴의 [저장 폴더 열기]로 볼 수 있습니다.", gif.len());
+            let mut body = format!("{name} ({}바이트). 트레이 메뉴의 [저장 폴더 열기]로 볼 수 있습니다.", gif.len());
+            if every_frame_black {
+                body = format!("{BLACK_RECORDING} {body}");
+            }
             notify_if_hidden(app, "GIF를 저장했습니다", &body);
             *app.state::<LastSaved>().0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path);
         }
