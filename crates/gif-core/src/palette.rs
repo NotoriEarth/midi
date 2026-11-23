@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Range;
 
 use crate::writer::Rgb;
 
@@ -11,7 +12,7 @@ pub enum PaletteError {
     ColorLimit(usize),
 }
 
-type CountedColor = (Rgb, u64);
+type CountedColor = (Rgb, u32);
 
 impl Palette {
     pub const MAX_COLORS: usize = NOT_ASKED_YET as usize;
@@ -31,22 +32,24 @@ impl Palette {
         if !(1..=Self::MAX_COLORS).contains(&max_colors) {
             return Err(PaletteError::ColorLimit(max_colors));
         }
-        let every_color = counts.in_color_order();
-        if every_color.is_empty() {
+        let mut colors = counts.in_color_order();
+        if colors.is_empty() {
             return Err(PaletteError::NoPixels);
         }
 
-        let mut boxes = vec![every_color];
+        let mut boxes = Vec::with_capacity(max_colors);
+        boxes.push(0..colors.len());
         while boxes.len() < max_colors {
-            let Some(widest) = widest_box_that_can_split(&boxes) else {
+            let Some(widest) = widest_box_that_can_split(&colors, &boxes) else {
                 break;
             };
-            let (lower, upper) = split_at_median(boxes.swap_remove(widest));
-            boxes.push(lower);
-            boxes.push(upper);
+            let Range { start, end } = boxes.swap_remove(widest);
+            let cut = start + split_at_median(&mut colors[start..end]);
+            boxes.push(start..cut);
+            boxes.push(cut..end);
         }
 
-        Ok(Palette(boxes.iter().map(|colors| average(colors)).collect()))
+        Ok(Palette(boxes.into_iter().map(|range| average(&colors[range])).collect()))
     }
 
     pub fn colors(&self) -> &[Rgb] {
@@ -121,8 +124,10 @@ impl ColorCounts {
     }
 
     fn in_color_order(&self) -> Vec<CountedColor> {
+        let mut colors = Vec::with_capacity(self.0.iter().filter(|&&count| count > 0).count());
         let seen = self.0.iter().enumerate().filter(|&(_, &count)| count > 0);
-        seen.map(|(slot, &count)| (color_of(slot), u64::from(count))).collect()
+        colors.extend(seen.map(|(slot, &count)| (color_of(slot), count)));
+        colors
     }
 }
 
@@ -149,36 +154,36 @@ fn widest_channel(colors: &[CountedColor]) -> (u8, usize) {
 }
 
 fn pixel_count(colors: &[CountedColor]) -> u64 {
-    colors.iter().map(|(_, count)| count).sum()
+    colors.iter().map(|&(_, count)| u64::from(count)).sum()
 }
 
-fn widest_box_that_can_split(boxes: &[Vec<CountedColor>]) -> Option<usize> {
+fn widest_box_that_can_split(colors: &[CountedColor], boxes: &[Range<usize>]) -> Option<usize> {
     (0..boxes.len())
         .rev()
         .filter(|&index| boxes[index].len() > 1)
-        .max_by_key(|&index| (widest_channel(&boxes[index]).0, pixel_count(&boxes[index])))
+        .max_by_key(|&index| {
+            let colors = &colors[boxes[index].clone()];
+            (widest_channel(colors).0, pixel_count(colors))
+        })
 }
 
-fn split_at_median(mut colors: Vec<CountedColor>) -> (Vec<CountedColor>, Vec<CountedColor>) {
-    let (_, channel) = widest_channel(&colors);
-    colors.sort_by_key(|&(color, _)| (color[channel], color));
+fn split_at_median(colors: &mut [CountedColor]) -> usize {
+    let (_, channel) = widest_channel(colors);
+    colors.sort_unstable_by_key(|&(color, _)| (color[channel], color));
 
-    let half = pixel_count(&colors).div_ceil(2);
+    let half = pixel_count(colors).div_ceil(2);
     let mut seen = 0;
-    let reaches_half = colors.iter().position(|(_, count)| {
-        seen += count;
+    let reaches_half = colors.iter().position(|&(_, count)| {
+        seen += u64::from(count);
         seen >= half
     });
-    let cut = reaches_half.map_or(1, |position| position + 1).clamp(1, colors.len() - 1);
-
-    let upper = colors.split_off(cut);
-    (colors, upper)
+    reaches_half.map_or(1, |position| position + 1).clamp(1, colors.len() - 1)
 }
 
 fn average(colors: &[CountedColor]) -> Rgb {
     let total = pixel_count(colors);
     std::array::from_fn(|channel| {
-        let sum: u64 = colors.iter().map(|(color, count)| u64::from(color[channel]) * count).sum();
+        let sum: u64 = colors.iter().map(|&(color, count)| u64::from(color[channel]) * u64::from(count)).sum();
         ((sum + total / 2) / total) as u8
     })
 }
