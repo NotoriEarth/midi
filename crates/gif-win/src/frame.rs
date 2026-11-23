@@ -1,12 +1,12 @@
 use std::cell::RefCell;
 use std::sync::Once;
 
-use gif_core::selection::{Nudge, SizeEntry, SizeKey, frame_start, nudge};
+use gif_core::selection::{Nudge, SizeEntry, SizeKey, SizeSide, frame_start, nudge};
 use gif_core::session::{MonitorId, ScreenRect};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, ClientToScreen, CombineRgn, CreateRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HFONT,
-    InvalidateRect, PAINTSTRUCT, RGN_DIFF, SetWindowRgn,
+    BeginPaint, ClientToScreen, CombineRgn, CreateRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect, GetDC,
+    GetTextExtentPoint32W, HFONT, InvalidateRect, PAINTSTRUCT, RGN_DIFF, ReleaseDC, SelectObject, SetWindowRgn,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetThreadDpiAwarenessContext};
@@ -28,7 +28,7 @@ use windows::core::{PCWSTR, w};
 use crate::CaptureError;
 use crate::border::THICKNESS;
 use crate::capture::{every_monitor, monitor_bounds, monitor_holding_most_of, system};
-use crate::panel::{BASE_DPI, BASE_SIZE, PanelButton, bar_font, button_at, draw_bar, panel_place};
+use crate::panel::{BASE_DPI, BASE_SIZE, PanelButton, bar_font, button_at, draw_bar, panel_place, stop_width};
 
 const RING_CLASS: PCWSTR = w!("midi-frame-ring");
 const BAR_CLASS: PCWSTR = w!("midi-frame-bar");
@@ -409,6 +409,40 @@ fn apply_typed_size(layout: Layout) {
     }
 }
 
+fn bar_label(layout: Layout) -> String {
+    let region = region_now(layout);
+    let typing = with_frame(|frame| frame.size_entry).flatten();
+    typing.map_or_else(|| format!("{}×{}", region.width, region.height), |entry| entry.label(region))
+}
+
+fn side_at(bar: HWND, layout: Layout, x: i32) -> SizeSide {
+    let label = bar_label(layout);
+    let Some((width_part, _)) = label.split_once('×') else { return SizeSide::Width };
+    let Some(font) = with_frame(|frame| frame.font) else { return SizeSide::Width };
+    let wide = |canvas, text: &str| {
+        let text: Vec<u16> = text.encode_utf16().collect();
+        let mut size = SIZE::default();
+        let _ = unsafe { GetTextExtentPoint32W(canvas, &text, &mut size) };
+        size.cx
+    };
+    let (label_right, split) = unsafe {
+        let canvas = GetDC(Some(bar));
+        let earlier = SelectObject(canvas, font.into());
+        let (all, before, times) = (wide(canvas, &label), wide(canvas, width_part), wide(canvas, "×"));
+        SelectObject(canvas, earlier);
+        ReleaseDC(Some(bar), canvas);
+        let (width, height) = layout.bar_size;
+        let label_right = width - height - stop_width(height);
+        (label_right, (label_right - all) / 2 + before + times / 2)
+    };
+    if x < split.min(label_right) { SizeSide::Width } else { SizeSide::Height }
+}
+
+fn choose_side(layout: Layout, side: SizeSide) {
+    with_frame(|frame| frame.size_entry = Some(frame.size_entry.unwrap_or_default().edit(side)));
+    let _ = unsafe { InvalidateRect(Some(layout.bar), None, false) };
+}
+
 fn stop_typing(layout: Layout) {
     with_frame(|frame| frame.size_entry = None);
     let _ = unsafe { InvalidateRect(Some(layout.bar), None, false) };
@@ -435,9 +469,7 @@ unsafe extern "system" fn bar_proc(window: HWND, message: u32, wparam: WPARAM, l
     match message {
         WM_ERASEBKGND => LRESULT(1),
         WM_PAINT => {
-            let region = region_now(layout);
-            let typing = with_frame(|frame| frame.size_entry).flatten();
-            let label = typing.map_or_else(|| format!("{}×{}", region.width, region.height), |entry| entry.label(region));
+            let label = bar_label(layout);
             let mut paint = PAINTSTRUCT::default();
             let canvas = unsafe { BeginPaint(window, &mut paint) };
             if let Some(font) = with_frame(|frame| frame.font) {
@@ -469,8 +501,14 @@ unsafe extern "system" fn bar_proc(window: HWND, message: u32, wparam: WPARAM, l
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            if with_frame(|frame| frame.drag.take()).flatten().is_some() {
+            if let Some(drag) = with_frame(|frame| frame.drag.take()).flatten() {
                 let _ = unsafe { ReleaseCapture() };
+                let mut point = signed_point(lparam);
+                let at = point.x;
+                let _ = unsafe { ClientToScreen(window, &mut point) };
+                if (point.x, point.y) == (drag.pressed_at.x, drag.pressed_at.y) {
+                    choose_side(layout, side_at(window, layout, at));
+                }
             } else {
                 match button_at(signed_point(lparam).x, layout.bar_size) {
                     Some(PanelButton::Stop) => start_now(layout),
@@ -789,6 +827,30 @@ mod tests {
         for character in text.chars() {
             post(bar, WM_CHAR, character as usize, 0, 0);
         }
+    }
+
+    fn click(window: HWND, (x, y): (i32, i32)) {
+        post(window, WM_LBUTTONDOWN, 1, x, y);
+        post(window, WM_LBUTTONUP, 0, x, y);
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn clicking_the_width_or_the_height_on_the_bar_lets_that_side_be_typed() {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let chosen = with_the_frame(START, |_, bar| {
+            let shown = rect_of(bar);
+            let (width, height) = (shown.right - shown.left, shown.bottom - shown.top);
+            let label_right = width - height - stop_width(height);
+            let a_little = height * 3 / 8;
+            click(bar, (label_right / 2 + a_little, height / 2));
+            type_text(bar, "200");
+            click(bar, (a_little / 2, height / 2));
+            type_text(bar, "640");
+            post(bar, WM_KEYDOWN, usize::from(VK_RETURN.0), 0, 0);
+            post(bar, WM_KEYDOWN, usize::from(VK_RETURN.0), 0, 0);
+        });
+        assert_eq!(chosen, Some(ScreenRect { width: 640, height: 200, ..START }));
     }
 
     #[test]

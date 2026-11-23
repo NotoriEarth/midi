@@ -61,6 +61,12 @@ pub enum SizeKey {
     Erase,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeSide {
+    Width,
+    Height,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SizeEntry {
     width: Option<u32>,
@@ -71,6 +77,13 @@ pub struct SizeEntry {
 const LONGEST_SIDE_TYPED: u32 = 9999;
 
 impl SizeEntry {
+    pub fn edit(self, side: SizeSide) -> SizeEntry {
+        match side {
+            SizeSide::Width => SizeEntry { width: None, on_height: false, ..self },
+            SizeSide::Height => SizeEntry { height: None, on_height: true, ..self },
+        }
+    }
+
     pub fn press(self, key: SizeKey) -> SizeEntry {
         let typing = if self.on_height { self.height } else { self.width };
         let typed = match key {
@@ -254,6 +267,21 @@ mod tests {
         assert_eq!(typed("640x360").apply(start, SIZE), frame(1920 - 640, 1080 - 360, 640, 360));
         assert_eq!(typed("5000x5000").apply(start, SIZE), frame(0, 0, 1920, 1080));
         assert_eq!(typed("3x3").apply(start, SIZE), frame(1500, 900, MIN_SIDE, MIN_SIDE));
+    }
+
+    #[test]
+    fn choosing_a_side_empties_it_for_typing_and_keeps_the_other() {
+        let start = frame(100, 200, 640, 360);
+        let height = SizeEntry::default().edit(SizeSide::Height);
+        assert_eq!(height.label(start), "640×[ ]");
+        let typed_height = "300".chars().fold(height, |entry, digit| entry.press(SizeKey::Digit(digit.to_digit(10).unwrap() as u8)));
+        assert_eq!(typed_height.label(start), "640×[300]");
+        assert_eq!(typed_height.apply(start, SIZE), frame(100, 200, 640, 300));
+
+        let width_again = typed_height.edit(SizeSide::Width);
+        assert_eq!(width_again.label(start), "[ ]×300");
+        assert_eq!(width_again.press(SizeKey::Digit(8)).press(SizeKey::Digit(0)).press(SizeKey::Digit(0)).apply(start, SIZE), frame(100, 200, 800, 300));
+        assert_eq!(typed("1280").edit(SizeSide::Width).label(start), "[ ]×360", "choosing the side being typed starts it over");
     }
 
     #[test]
