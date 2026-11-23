@@ -65,9 +65,7 @@ impl Palette {
     }
 
     pub fn lookup(&self) -> NearestColor<'_> {
-        let mut by_green: Vec<(Rgb, u8)> = self.0.iter().enumerate().map(|(index, &color)| (color, index as u8)).collect();
-        by_green.sort_by_key(|&(color, index)| (color[GREEN], index));
-        NearestColor { palette: self, by_green, answers: vec![NOT_ASKED_YET; EVERY_RGB_COLOR] }
+        NearestColor { palette: self, near_cells: NearCells::of(self), answers: vec![NOT_ASKED_YET; EVERY_RGB_COLOR] }
     }
 
     pub fn nearest(&self, pixel: Rgb) -> u8 {
@@ -80,13 +78,65 @@ impl Palette {
 
 const EVERY_RGB_COLOR: usize = 1 << 24;
 const NOT_ASKED_YET: u8 = u8::MAX;
-const GREEN: usize = 1;
 
 #[derive(Debug, Clone)]
 pub struct NearestColor<'a> {
     palette: &'a Palette,
-    by_green: Vec<(Rgb, u8)>,
+    near_cells: NearCells,
     answers: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct NearCells {
+    starts: Vec<usize>,
+    candidates: Vec<(Rgb, u8)>,
+}
+
+impl NearCells {
+    const CELL_BITS: u32 = 4;
+    const CELL_SIZE: u8 = 1 << Self::CELL_BITS;
+    const CELL_COUNT: usize = 1 << (3 * (8 - Self::CELL_BITS));
+
+    fn of(palette: &Palette) -> Self {
+        let mut starts = Vec::with_capacity(Self::CELL_COUNT + 1);
+        let mut candidates = Vec::new();
+        for cell in 0..Self::CELL_COUNT {
+            starts.push(candidates.len());
+            let (low, high) = Self::corners(cell);
+            let farthest_of_the_nearest = palette.0.iter().map(|&color| farthest_in(low, high, color)).min();
+            let bound = farthest_of_the_nearest.expect("a palette always has at least one color");
+            let can_be_nearest = palette.0.iter().enumerate().filter(|&(_, &color)| nearest_in(low, high, color) <= bound);
+            candidates.extend(can_be_nearest.map(|(index, &color)| (color, index as u8)));
+        }
+        starts.push(candidates.len());
+        Self { starts, candidates }
+    }
+
+    fn corners(cell: usize) -> (Rgb, Rgb) {
+        let per_axis = 8 - Self::CELL_BITS;
+        let mask = (1 << per_axis) - 1;
+        let low = [cell >> (2 * per_axis), cell >> per_axis, cell].map(|part| ((part & mask) as u8) << Self::CELL_BITS);
+        (low, low.map(|channel| channel + (Self::CELL_SIZE - 1)))
+    }
+
+    fn cell_of(pixel: Rgb) -> usize {
+        let per_axis = 8 - Self::CELL_BITS;
+        let [red, green, blue] = pixel.map(|channel| usize::from(channel >> Self::CELL_BITS));
+        red << (2 * per_axis) | green << per_axis | blue
+    }
+
+    fn near(&self, pixel: Rgb) -> &[(Rgb, u8)] {
+        let cell = Self::cell_of(pixel);
+        &self.candidates[self.starts[cell]..self.starts[cell + 1]]
+    }
+}
+
+fn nearest_in(low: Rgb, high: Rgb, color: Rgb) -> u32 {
+    (0..3).map(|channel| u32::from(color[channel].saturating_sub(high[channel]).max(low[channel].saturating_sub(color[channel]))).pow(2)).sum()
+}
+
+fn farthest_in(low: Rgb, high: Rgb, color: Rgb) -> u32 {
+    (0..3).map(|channel| u32::from(color[channel].abs_diff(low[channel]).max(color[channel].abs_diff(high[channel]))).pow(2)).sum()
 }
 
 impl NearestColor<'_> {
@@ -104,27 +154,9 @@ impl NearestColor<'_> {
 
     #[inline(never)]
     fn search(&self, pixel: Rgb) -> u8 {
-        let green = pixel[GREEN];
-        let above = self.by_green.partition_point(|&(color, _)| color[GREEN] < green);
-        let mut best = (u32::MAX, u8::MAX);
-        let mut consider = |&(color, index): &(Rgb, u8)| {
-            if u32::from(color[GREEN].abs_diff(green)).pow(2) > best.0 {
-                return false;
-            }
-            best = best.min((squared_distance(color, pixel), index));
-            true
-        };
-        for entry in &self.by_green[above..] {
-            if !consider(entry) {
-                break;
-            }
-        }
-        for entry in self.by_green[..above].iter().rev() {
-            if !consider(entry) {
-                break;
-            }
-        }
-        best.1
+        let near = self.near_cells.near(pixel).iter();
+        let best = near.map(|&(color, index)| (squared_distance(color, pixel), index)).min();
+        best.expect("every cell has at least one candidate").1
     }
 }
 
@@ -414,6 +446,24 @@ mod tests {
         assert_eq!(palette.nearest([0, 10, 0]), 1);
         for color in [[0, 10, 0], [0, 30, 0], [5, 25, 0], [0, 20, 0], [0, 50, 0], [5, 35, 0], [10, 10, 0]] {
             assert_eq!(lookup.of(color), palette.nearest(color), "{color:?}");
+        }
+    }
+
+    #[test]
+    fn colors_on_the_edges_of_the_lookup_cells_get_the_same_answer_as_searching_every_color() {
+        let on_a_grid: Vec<Rgb> = (0..255u32).map(|n| [(n % 8 * 32) as u8, (n / 8 % 8 * 32) as u8, (n / 64 * 32) as u8]).collect();
+        let cell_edges: Vec<u8> = (0..=255u8).filter(|value| value % 16 == 0 || value % 16 == 15).collect();
+        for pixels in [on_a_grid, many_colors()] {
+            let palette = Palette::from_frames(&[&pixels], Palette::MAX_COLORS).unwrap();
+            let mut lookup = palette.lookup();
+            for &red in &cell_edges {
+                for &green in &cell_edges {
+                    for &blue in &cell_edges {
+                        let color = [red, green, blue];
+                        assert_eq!(lookup.of(color), palette.nearest(color), "{color:?}");
+                    }
+                }
+            }
         }
     }
 
