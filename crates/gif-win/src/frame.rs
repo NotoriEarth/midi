@@ -15,7 +15,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_SHIFT, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW, GetWindowRect,
+    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW, GetWindowRect,
     HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTNOWHERE, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW,
     LoadCursorW, MINMAXINFO, MSG, PostMessageW, RegisterClassExW, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
     SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowDisplayAffinity, SetWindowPos, ShowWindow,
@@ -195,6 +195,7 @@ fn register(class: PCWSTR, procedure: unsafe extern "system" fn(HWND, u32, WPARA
     let module = unsafe { GetModuleHandleW(None) }.map_err(system)?;
     let window_class = WNDCLASSEXW {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
+        style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(procedure),
         hInstance: module.into(),
         hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(),
@@ -694,6 +695,94 @@ mod tests {
             assert!(on_target, "the bar {shown:?} stays with the frame on {target:?}");
         });
         assert_eq!(chosen, Some(ScreenRect { monitor: MonitorId(other as u32), x: 100, y: 200, ..START }));
+    }
+
+    fn wrongly_painted_ring_pixels(ring: HWND, margin: i32) -> Vec<(i32, i32, u32)> {
+        use windows::Win32::UI::WindowsAndMessaging::WDA_NONE;
+        let _ = unsafe { SetWindowDisplayAffinity(ring, WDA_NONE) };
+        thread::sleep(Duration::from_millis(150));
+        let at = rect_of(ring);
+        let (width, height) = (at.right - at.left, at.bottom - at.top);
+        let shown = screen_pixels(at);
+        let amber = |x: i32, y: i32| {
+            let (left, right, top, bottom) = (margin - THICKNESS, width - margin + THICKNESS, margin - THICKNESS, height - margin + THICKNESS);
+            (left..right).contains(&x) && (top..bottom).contains(&y)
+        };
+        let mut wrong = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                if ring_hit(x, y, (width, height), margin) == HTNOWHERE {
+                    continue;
+                }
+                let expected = if amber(x, y) { WAITING_AMBER } else { FRAME_DARK };
+                let seen = shown[(y * width + x) as usize];
+                if seen != expected.0 {
+                    wrong.push((x, y, seen));
+                }
+            }
+        }
+        let _ = unsafe { SetWindowDisplayAffinity(ring, WDA_EXCLUDEFROMCAPTURE) };
+        wrong
+    }
+
+    fn screen_pixels(area: RECT) -> Vec<u32> {
+        use windows::Win32::Graphics::Gdi::{
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS,
+            DeleteDC, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
+        };
+        let (width, height) = (area.right - area.left, area.bottom - area.top);
+        let mut pixels = vec![0u32; (width * height) as usize];
+        unsafe {
+            let screen = GetDC(None);
+            let copy = CreateCompatibleDC(Some(screen));
+            let bitmap = CreateCompatibleBitmap(screen, width, height);
+            let earlier = SelectObject(copy, bitmap.into());
+            BitBlt(copy, 0, 0, width, height, Some(screen), area.left, area.top, SRCCOPY).unwrap();
+            SelectObject(copy, earlier);
+            let header = BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            };
+            let mut info = BITMAPINFO { bmiHeader: header, ..Default::default() };
+            GetDIBits(copy, bitmap, 0, height as u32, Some(pixels.as_mut_ptr().cast()), &mut info, DIB_RGB_COLORS);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(copy);
+            ReleaseDC(None, screen);
+        }
+        pixels.iter().map(|&bgra| ((bgra & 0xFF) << 16) | (bgra & 0xFF00) | ((bgra >> 16) & 0xFF)).collect()
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn stretching_the_ring_up_and_down_keeps_a_thin_amber_line() {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let wrong = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = wrong.clone();
+        with_the_frame(START, move |ring, bar| {
+            let monitor = crate::capture::monitor_bounds(PRIMARY).unwrap();
+            let margin = monitor.left + START.x - rect_of(ring).left;
+            for step in [30, 30, 30, -20, -20, -20] {
+                let was = rect_of(ring);
+                let (width, height) = (was.right - was.left, was.bottom - was.top + step);
+                unsafe { SetWindowPos(ring, None, was.left, was.top, width, height, SWP_NOZORDER | SWP_NOACTIVATE) }.unwrap();
+                thread::sleep(Duration::from_millis(30));
+            }
+            for step in [30, 30, 30, -20, -20, -20] {
+                let was = rect_of(ring);
+                let (width, height) = (was.right - was.left, was.bottom - was.top + step);
+                unsafe { SetWindowPos(ring, None, was.left, was.top - step, width, height, SWP_NOZORDER | SWP_NOACTIVATE) }.unwrap();
+                thread::sleep(Duration::from_millis(30));
+            }
+            *seen.lock().unwrap() = wrongly_painted_ring_pixels(ring, margin);
+            post(bar, WM_KEYDOWN, usize::from(VK_ESCAPE.0), 0, 0);
+        });
+        let wrong = wrong.lock().unwrap();
+        assert!(wrong.is_empty(), "{} pixels painted wrong, first ones {:?}", wrong.len(), &wrong[..wrong.len().min(8)]);
     }
 
     fn type_text(bar: HWND, text: &str) {
