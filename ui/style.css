@@ -236,6 +236,7 @@ select:disabled {
 #status,
 #encoded {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 #saved {

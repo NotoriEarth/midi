@@ -66,8 +66,14 @@ const STATES = [
   },
   {
     name: "every conditional field open",
-    change: choose("#selection", "frame") + choose("#size-mode", "fit") + choose("#max-size", "custom"),
+    change: choose("#level", "") + choose("#selection", "frame") + choose("#size-mode", "fit") + choose("#max-size", "custom"),
     expect: "conditionalShown",
+  },
+  {
+    name: "tallest settings",
+    change:
+      choose("#selection", "frame") + choose("#size-mode", "fit") + choose("#max-size", "custom") +
+      `{ const level = document.querySelector("#level"); level.value = level.options[level.options.length - 1].value; level.dispatchEvent(new Event("change", { bubbles: true })); }`,
   },
   { name: "recording", change: show("#cancel") + `document.querySelector("#record").textContent = "끝";`, expect: "buttonsInside" },
   {
@@ -76,6 +82,12 @@ const STATES = [
       show("#preview") + show("#saved") + show("#encoded") +
       `document.querySelector("#status").textContent = "가".repeat(200);` +
       `document.querySelector("#encoded").textContent = "나".repeat(120);`,
+  },
+  {
+    name: "unbroken error text",
+    change:
+      show("#preview") + show("#saved") + show("#encoded") +
+      `document.querySelector("#status").textContent = "저장 실패: C:\\\\" + "a".repeat(150) + ".gif";`,
     expect: "resultScrolls",
   },
 ];
@@ -89,9 +101,18 @@ const MEASURE = `(() => {
   if (document.getElementById("make")) problems.push("#make still present");
   for (const id of ["autostart", "hotkey-input", "hotkey-default"])
     if (document.querySelector("#settings #" + id)) problems.push("#" + id + " is inside the settings form");
-  for (const id of ["level", "size-mode", "max-size"]) {
-    const e = document.getElementById(id);
-    if (e && e.offsetParent && e.scrollWidth > e.clientWidth) problems.push("#" + id + " text is cut off");
+  const ruler = document.createElement("canvas").getContext("2d");
+  for (const select of document.querySelectorAll("select")) {
+    if (!select.offsetParent || select.selectedIndex < 0) continue;
+    const style = getComputedStyle(select);
+    ruler.font = style.font;
+    const text = ruler.measureText(select.options[select.selectedIndex].text).width;
+    const room = select.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 16;
+    if (text > room) problems.push("#" + select.id + " text is cut off (" + Math.ceil(text) + "px in " + Math.floor(room) + "px)");
+  }
+  for (const id of ["status", "encoded"]) {
+    const box = document.getElementById(id)?.parentElement;
+    if (box && box.scrollWidth > box.clientWidth) problems.push("the result box scrolls sideways (" + box.scrollWidth + " > " + box.clientWidth + ")");
   }
   const visible = (selector) => { const e = document.querySelector(selector); return !!e && e.getClientRects().length > 0; };
   const inside = (selector) => { const r = document.querySelector(selector).getBoundingClientRect(); return r.left >= 0 && r.top >= 0 && r.right <= ${WIDTH} && r.bottom <= ${HEIGHT}; };
@@ -103,8 +124,13 @@ const MEASURE = `(() => {
   resultOverflowY: (() => { const box = document.querySelector("#status")?.parentElement; return box ? getComputedStyle(box).overflowY : ""; })() };
 })()`;
 
+// Choosing values fires the page's change handler, which saves them, so put the saved settings back before each state and at the end.
+await readyPage();
+const invoke = (command, args) => evaluate(`window.__TAURI__.core.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`);
+const savedAtStart = await invoke("saved_settings", {});
 let failed = false;
 for (const state of STATES) {
+  await invoke("remember_settings", { settings: savedAtStart });
   await send("Page.reload");
   await new Promise((resolve) => setTimeout(resolve, 300));
   await readyPage();
@@ -127,6 +153,7 @@ for (const state of STATES) {
     console.log(`ok   ${state.name}`);
   }
 }
+await invoke("remember_settings", { settings: savedAtStart });
 socket.close();
 if (failed) process.exit(1);
 console.log("layout ok");
