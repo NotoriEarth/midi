@@ -27,7 +27,7 @@ use windows::core::{PCWSTR, w};
 
 use crate::CaptureError;
 use crate::border::THICKNESS;
-use crate::capture::{monitor_bounds, system};
+use crate::capture::{every_monitor, monitor_bounds, monitor_holding_most_of, system};
 use crate::panel::{BASE_DPI, BASE_SIZE, PanelButton, bar_font, button_at, draw_bar, panel_place};
 
 const RING_CLASS: PCWSTR = w!("midi-frame-ring");
@@ -67,6 +67,7 @@ struct Drag {
 struct FrameState {
     monitor_id: MonitorId,
     monitor: RECT,
+    monitors: Vec<RECT>,
     margin: i32,
     bar_size: (i32, i32),
     gap: i32,
@@ -146,6 +147,22 @@ fn place_ring(layout: Layout, region: ScreenRect) {
     let top = layout.monitor.top + region.y - margin;
     let (width, height) = (region.width as i32 + 2 * margin, region.height as i32 + 2 * margin);
     let _ = unsafe { SetWindowPos(layout.ring, None, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE) };
+}
+
+fn rehome(now: Layout) -> Layout {
+    let area = region_on_screen(now);
+    let moved = with_frame(|frame| {
+        let index = monitor_holding_most_of(area, &frame.monitors)?;
+        let monitor_id = MonitorId(index as u32);
+        (monitor_id != frame.monitor_id).then(|| {
+            frame.monitor_id = monitor_id;
+            frame.monitor = frame.monitors[index];
+        })
+    });
+    match moved.flatten() {
+        Some(()) => layout().unwrap_or(now),
+        None => now,
+    }
 }
 
 fn follow(layout: Layout) {
@@ -232,6 +249,7 @@ fn adjust_in_physical_pixels(start: ScreenRect) -> Result<Option<ScreenRect>, Ca
     FRAME.set(Some(FrameState {
         monitor_id: start.monitor,
         monitor,
+        monitors: every_monitor().unwrap_or_else(|_| vec![monitor]),
         margin,
         bar_size: (scale(BASE_SIZE.0), scale(BASE_SIZE.1)),
         gap: margin + scale(4),
@@ -273,11 +291,13 @@ fn adjust_in_physical_pixels(start: ScreenRect) -> Result<Option<ScreenRect>, Ca
         let _ = DestroyWindow(bar);
         let _ = DestroyWindow(ring);
     }
+    let mut last_monitor = monitor;
     if let Some(state) = state {
         let _ = unsafe { DeleteObject(state.font.into()) };
+        last_monitor = state.monitor;
     }
-    let monitor_size = ((monitor.right - monitor.left) as u32, (monitor.bottom - monitor.top) as u32);
-    Ok(outcome.map(|region| frame_start(Some(region), start.monitor, monitor_size)))
+    let monitor_size = ((last_monitor.right - last_monitor.left) as u32, (last_monitor.bottom - last_monitor.top) as u32);
+    Ok(outcome.map(|region| frame_start(Some(region), region.monitor, monitor_size)))
 }
 
 fn signed_point(lparam: LPARAM) -> POINT {
@@ -308,7 +328,7 @@ unsafe extern "system" fn ring_proc(window: HWND, message: u32, wparam: WPARAM, 
         }
         WM_WINDOWPOSCHANGED => {
             let handled = default();
-            follow(layout);
+            follow(rehome(layout));
             handled
         }
         WM_GETMINMAXINFO => {
@@ -650,6 +670,30 @@ mod tests {
             post(bar, WM_KEYDOWN, usize::from(VK_RETURN.0), 0, 0);
         });
         assert_eq!(chosen, Some(ScreenRect { x: 450, y: 320, ..START }));
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop with a second monitor; run with --ignored"]
+    fn a_frame_moved_onto_another_monitor_records_there_and_the_bar_goes_with_it() {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let monitors = crate::capture::every_monitor().unwrap();
+        let primary = monitors[PRIMARY.0 as usize];
+        let Some(other) = monitors.iter().position(|&monitor| monitor != primary) else {
+            return;
+        };
+        let target = monitors[other];
+        let chosen = with_the_frame(START, move |ring, bar| {
+            let margin = START.x - (rect_of(ring).left - primary.left);
+            let (width, height) = (START.width as i32 + 2 * margin, START.height as i32 + 2 * margin);
+            let (left, top) = (target.left + 100 - margin, target.top + 200 - margin);
+            unsafe { SetWindowPos(ring, None, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE) }.unwrap();
+            thread::sleep(Duration::from_millis(100));
+            let shown = rect_of(bar);
+            let on_target = shown.left >= target.left && shown.right <= target.right && shown.top >= target.top && shown.bottom <= target.bottom;
+            post(bar, WM_KEYDOWN, usize::from(VK_RETURN.0), 0, 0);
+            assert!(on_target, "the bar {shown:?} stays with the frame on {target:?}");
+        });
+        assert_eq!(chosen, Some(ScreenRect { monitor: MonitorId(other as u32), x: 100, y: 200, ..START }));
     }
 
     fn type_text(bar: HWND, text: &str) {

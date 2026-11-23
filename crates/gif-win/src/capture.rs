@@ -165,7 +165,17 @@ fn monitor_containing((x, y): (i32, i32), monitors: &[RECT]) -> Option<usize> {
     monitors.iter().position(|area| (area.left..area.right).contains(&x) && (area.top..area.bottom).contains(&y))
 }
 
-fn every_monitor() -> Result<Vec<RECT>, CaptureError> {
+pub(crate) fn monitor_holding_most_of(area: RECT, monitors: &[RECT]) -> Option<usize> {
+    let overlap = |monitor: &RECT| {
+        let width = (area.right.min(monitor.right) - area.left.max(monitor.left)).max(0);
+        let height = (area.bottom.min(monitor.bottom) - area.top.max(monitor.top)).max(0);
+        i64::from(width) * i64::from(height)
+    };
+    let (index, most) = monitors.iter().map(overlap).enumerate().max_by_key(|&(index, held)| (held, std::cmp::Reverse(index)))?;
+    (most > 0).then_some(index)
+}
+
+pub(crate) fn every_monitor() -> Result<Vec<RECT>, CaptureError> {
     let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(system)?;
     let mut areas = Vec::new();
     for adapter_index in 0.. {
@@ -283,6 +293,18 @@ mod tests {
         assert_eq!(monitor_containing((3000, -100), &side_by_side), Some(1));
         assert_eq!(monitor_containing((3640, 0), &side_by_side), None, "the right edge belongs to no monitor");
         assert_eq!(monitor_containing((100, 1500), &side_by_side), None, "below the first monitor");
+    }
+
+    #[test]
+    fn an_area_belongs_to_the_monitor_holding_most_of_it() {
+        let side_by_side = [RECT { left: 0, top: 0, right: 2560, bottom: 1440 }, RECT { left: 2560, top: -155, right: 3640, bottom: 1765 }];
+        let area = |left, top, width, height| RECT { left, top, right: left + width, bottom: top + height };
+        assert_eq!(monitor_holding_most_of(area(100, 100, 640, 360), &side_by_side), Some(0));
+        assert_eq!(monitor_holding_most_of(area(2700, 400, 640, 360), &side_by_side), Some(1));
+        assert_eq!(monitor_holding_most_of(area(2300, 400, 640, 360), &side_by_side), Some(1), "380 of 640 columns are on the second");
+        assert_eq!(monitor_holding_most_of(area(2100, 400, 640, 360), &side_by_side), Some(0), "460 of 640 columns are on the first");
+        assert_eq!(monitor_holding_most_of(area(2700, -300, 640, 360), &side_by_side), Some(1), "partly above the second monitor");
+        assert_eq!(monitor_holding_most_of(area(100, 1600, 640, 360), &side_by_side), None, "on no monitor at all");
     }
 
     #[test]
