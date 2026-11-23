@@ -54,6 +54,56 @@ pub fn nudge(region: ScreenRect, monitor_size: (u32, u32), (dx, dy): Point, how:
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeKey {
+    Digit(u8),
+    Next,
+    Erase,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SizeEntry {
+    width: Option<u32>,
+    height: Option<u32>,
+    on_height: bool,
+}
+
+const LONGEST_SIDE_TYPED: u32 = 9999;
+
+impl SizeEntry {
+    pub fn press(self, key: SizeKey) -> SizeEntry {
+        let typing = if self.on_height { self.height } else { self.width };
+        let typed = match key {
+            SizeKey::Digit(digit) => {
+                let longer = typing.unwrap_or(0) * 10 + u32::from(digit);
+                if longer > LONGEST_SIDE_TYPED { typing } else { Some(longer) }
+            }
+            SizeKey::Next => return SizeEntry { on_height: true, ..self },
+            SizeKey::Erase if typing.is_none() => return SizeEntry { on_height: false, ..self },
+            SizeKey::Erase => typing.and_then(|value| (value >= 10).then_some(value / 10)),
+        };
+        if self.on_height { SizeEntry { height: typed, ..self } } else { SizeEntry { width: typed, ..self } }
+    }
+
+    pub fn label(&self, region: ScreenRect) -> String {
+        let side = |typed: Option<u32>, now: u32, typing: bool| match (typing, typed) {
+            (true, Some(value)) => format!("[{value}]"),
+            (true, None) => "[ ]".to_string(),
+            (false, typed) => typed.unwrap_or(now).to_string(),
+        };
+        let width = side(self.width, region.width, !self.on_height);
+        let height = side(self.height, region.height, self.on_height);
+        format!("{width}×{height}")
+    }
+
+    pub fn apply(&self, region: ScreenRect, monitor_size: (u32, u32)) -> ScreenRect {
+        let side = |typed: Option<u32>, now: u32, limit: u32| typed.unwrap_or(now).clamp(MIN_SIDE, limit);
+        let (width, height) = (side(self.width, region.width, monitor_size.0), side(self.height, region.height, monitor_size.1));
+        let start = |at: i32, side: u32, limit: u32| at.min((limit - side) as i32);
+        ScreenRect { x: start(region.x, width, monitor_size.0), y: start(region.y, height, monitor_size.1), width, height, ..region }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +207,58 @@ mod tests {
     fn the_rectangle_keeps_the_monitor_it_was_dragged_on() {
         let region = drag_region(MonitorId(1), SIZE, (0, 0), (100, 100)).unwrap();
         assert_eq!(region.monitor, MonitorId(1));
+    }
+
+    fn typed(keys: &str) -> SizeEntry {
+        keys.chars().fold(SizeEntry::default(), |entry, key| {
+            entry.press(match key {
+                'x' => SizeKey::Next,
+                '<' => SizeKey::Erase,
+                digit => SizeKey::Digit(digit.to_digit(10).unwrap() as u8),
+            })
+        })
+    }
+
+    #[test]
+    fn a_typed_width_and_height_become_the_frame_size_where_it_is() {
+        let start = frame(100, 200, 500, 300);
+        assert_eq!(typed("1280x720").apply(start, SIZE), frame(100, 200, 1280, 720));
+    }
+
+    #[test]
+    fn the_field_being_typed_is_shown_in_brackets() {
+        let start = frame(100, 200, 500, 300);
+        assert_eq!(typed("12").label(start), "[12]×300");
+        assert_eq!(typed("1280x").label(start), "1280×[ ]");
+        assert_eq!(typed("1280x7").label(start), "1280×[7]");
+    }
+
+    #[test]
+    fn erasing_takes_back_the_last_digit_and_then_returns_to_the_width() {
+        let start = frame(100, 200, 500, 300);
+        assert_eq!(typed("128<").label(start), "[12]×300");
+        assert_eq!(typed("12x<").label(start), "[12]×300");
+        assert_eq!(typed("12x7<<9").label(start), "[129]×300");
+    }
+
+    #[test]
+    fn a_field_left_empty_keeps_that_side() {
+        let start = frame(100, 200, 500, 300);
+        assert_eq!(typed("800").apply(start, SIZE), frame(100, 200, 800, 300));
+        assert_eq!(typed("x400").apply(start, SIZE), frame(100, 200, 500, 400));
+    }
+
+    #[test]
+    fn a_size_that_does_not_fit_from_here_moves_the_frame_and_stops_at_the_monitor() {
+        let start = frame(1500, 900, 300, 100);
+        assert_eq!(typed("640x360").apply(start, SIZE), frame(1920 - 640, 1080 - 360, 640, 360));
+        assert_eq!(typed("5000x5000").apply(start, SIZE), frame(0, 0, 1920, 1080));
+        assert_eq!(typed("3x3").apply(start, SIZE), frame(1500, 900, MIN_SIDE, MIN_SIDE));
+    }
+
+    #[test]
+    fn no_side_takes_more_than_four_digits() {
+        let start = frame(0, 0, 500, 300);
+        assert_eq!(typed("123456").label(start), "[1234]×300");
     }
 }

@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::sync::Once;
 
-use gif_core::selection::{Nudge, frame_start, nudge};
+use gif_core::selection::{Nudge, SizeEntry, SizeKey, frame_start, nudge};
 use gif_core::session::{MonitorId, ScreenRect};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -19,7 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTNOWHERE, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW,
     LoadCursorW, MINMAXINFO, MSG, PostMessageW, RegisterClassExW, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
     SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowDisplayAffinity, SetWindowPos, ShowWindow,
-    TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WM_CLOSE, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN,
+    TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WM_CHAR, WM_CLOSE, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SIZE, WM_WINDOWPOSCHANGED, WNDCLASSEXW, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_POPUP,
 };
@@ -74,6 +74,7 @@ struct FrameState {
     bar: HWND,
     font: HFONT,
     drag: Option<Drag>,
+    size_entry: Option<SizeEntry>,
     outcome: Option<Option<ScreenRect>>,
 }
 
@@ -238,6 +239,7 @@ fn adjust_in_physical_pixels(start: ScreenRect) -> Result<Option<ScreenRect>, Ca
         bar,
         font: bar_font(scale(14)),
         drag: None,
+        size_entry: None,
         outcome: None,
     }));
 
@@ -355,7 +357,40 @@ fn paint_ring(window: HWND, margin: i32) {
 }
 
 fn start_now(layout: Layout) {
+    apply_typed_size(layout);
     decide(Some(region_now(layout)));
+}
+
+fn size_key_of(character: u32) -> Option<SizeKey> {
+    match char::from_u32(character)? {
+        digit @ '0'..='9' => Some(SizeKey::Digit(digit as u8 - b'0')),
+        'x' | 'X' | '*' | ' ' | '\t' => Some(SizeKey::Next),
+        '\u{8}' => Some(SizeKey::Erase),
+        _ => None,
+    }
+}
+
+fn type_size(layout: Layout, key: SizeKey) {
+    with_frame(|frame| {
+        frame.size_entry = match (frame.size_entry, key) {
+            (Some(entry), key) => Some(entry.press(key)),
+            (None, SizeKey::Digit(_)) => Some(SizeEntry::default().press(key)),
+            (None, _) => None,
+        }
+    });
+    let _ = unsafe { InvalidateRect(Some(layout.bar), None, false) };
+}
+
+fn apply_typed_size(layout: Layout) {
+    if let Some(entry) = with_frame(|frame| frame.size_entry.take()).flatten() {
+        place_ring(layout, entry.apply(region_now(layout), monitor_size(layout)));
+        let _ = unsafe { InvalidateRect(Some(layout.bar), None, false) };
+    }
+}
+
+fn stop_typing(layout: Layout) {
+    with_frame(|frame| frame.size_entry = None);
+    let _ = unsafe { InvalidateRect(Some(layout.bar), None, false) };
 }
 
 fn nudge_by_key(layout: Layout, key: u16) {
@@ -380,7 +415,8 @@ unsafe extern "system" fn bar_proc(window: HWND, message: u32, wparam: WPARAM, l
         WM_ERASEBKGND => LRESULT(1),
         WM_PAINT => {
             let region = region_now(layout);
-            let label = format!("{}×{}", region.width, region.height);
+            let typing = with_frame(|frame| frame.size_entry).flatten();
+            let label = typing.map_or_else(|| format!("{}×{}", region.width, region.height), |entry| entry.label(region));
             let mut paint = PAINTSTRUCT::default();
             let canvas = unsafe { BeginPaint(window, &mut paint) };
             if let Some(font) = with_frame(|frame| frame.font) {
@@ -425,10 +461,20 @@ unsafe extern "system" fn bar_proc(window: HWND, message: u32, wparam: WPARAM, l
         }
         WM_KEYDOWN => {
             let key = wparam.0 as u16;
+            let typing = with_frame(|frame| frame.size_entry.is_some()).unwrap_or(false);
             match key {
+                key if key == VK_RETURN.0 && typing => apply_typed_size(layout),
                 key if key == VK_RETURN.0 => start_now(layout),
+                key if key == VK_ESCAPE.0 && typing => stop_typing(layout),
                 key if key == VK_ESCAPE.0 => decide(None),
+                _ if typing => {}
                 key => nudge_by_key(layout, key),
+            }
+            LRESULT(0)
+        }
+        WM_CHAR => {
+            if let Some(key) = size_key_of(wparam.0 as u32) {
+                type_size(layout, key);
             }
             LRESULT(0)
         }
@@ -447,6 +493,7 @@ mod tests {
     use std::time::Duration;
     use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
     use windows::Win32::UI::Input::KeyboardAndMouse::{VK_DOWN, VK_ESCAPE, VK_RETURN, VK_RIGHT};
+    use windows::Win32::UI::WindowsAndMessaging::WM_CHAR;
     use windows::Win32::UI::WindowsAndMessaging::{
         FindWindowW, GetWindowRect, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT,
         HTTOPRIGHT, PostMessageW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WM_KEYDOWN, WM_LBUTTONDOWN,
@@ -479,6 +526,13 @@ mod tests {
     }
 
     #[test]
+    fn digits_x_and_backspace_are_the_keys_for_typing_a_size() {
+        let keys: Vec<_> = "7xX* \t\u{8}a".chars().map(|character| size_key_of(character as u32)).collect();
+        let next = Some(SizeKey::Next);
+        assert_eq!(keys, [Some(SizeKey::Digit(7)), next, next, next, next, next, Some(SizeKey::Erase), None]);
+    }
+
+    #[test]
     fn the_hole_in_the_middle_is_not_part_of_the_frame() {
         assert_eq!(ring_hit(250, 150, SIZE, MARGIN), HTNOWHERE);
     }
@@ -505,6 +559,7 @@ mod tests {
 
     fn with_the_frame(start: ScreenRect, act: impl FnOnce(HWND, HWND) + Send + 'static) -> Option<ScreenRect> {
         let hands = thread::spawn(move || {
+            let _ = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
             let (ring, bar) = (window_of(RING_CLASS), window_of(BAR_CLASS));
             act(ring, bar);
         });
@@ -595,5 +650,54 @@ mod tests {
             post(bar, WM_KEYDOWN, usize::from(VK_RETURN.0), 0, 0);
         });
         assert_eq!(chosen, Some(ScreenRect { x: 450, y: 320, ..START }));
+    }
+
+    fn type_text(bar: HWND, text: &str) {
+        for character in text.chars() {
+            post(bar, WM_CHAR, character as usize, 0, 0);
+        }
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn a_typed_size_resizes_the_frame_and_the_next_enter_starts() {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let chosen = with_the_frame(START, |ring, bar| {
+            let before = rect_of(ring);
+            type_text(bar, "640x360");
+            post(bar, WM_KEYDOWN, usize::from(VK_RETURN.0), 0, 0);
+            thread::sleep(Duration::from_millis(100));
+            let after = rect_of(ring);
+            let grew = (after.right - after.left - (before.right - before.left), after.bottom - after.top - (before.bottom - before.top));
+            assert_eq!(grew, (640 - 500, 360 - 300), "the frame takes the typed size before starting");
+            assert_eq!((after.left, after.top), (before.left, before.top), "and stays where it was");
+            post(bar, WM_KEYDOWN, usize::from(VK_RETURN.0), 0, 0);
+        });
+        assert_eq!(chosen, Some(ScreenRect { width: 640, height: 360, ..START }));
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn escape_while_typing_drops_the_typed_size_and_keeps_the_frame() {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let chosen = with_the_frame(START, |_, bar| {
+            type_text(bar, "640x360");
+            post(bar, WM_KEYDOWN, usize::from(VK_ESCAPE.0), 0, 0);
+            post(bar, WM_KEYDOWN, usize::from(VK_RIGHT.0), 0, 0);
+            post(bar, WM_KEYDOWN, usize::from(VK_RETURN.0), 0, 0);
+        });
+        assert_eq!(chosen, Some(ScreenRect { x: 401, ..START }));
+    }
+
+    #[test]
+    #[ignore = "needs an unlocked desktop; run with --ignored"]
+    fn pressing_start_while_typing_uses_the_typed_size() {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let chosen = with_the_frame(START, |_, bar| {
+            type_text(bar, "800x");
+            let (x, y) = start_button(bar);
+            post(bar, WM_LBUTTONUP, 0, x, y);
+        });
+        assert_eq!(chosen, Some(ScreenRect { width: 800, ..START }));
     }
 }
