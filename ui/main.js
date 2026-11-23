@@ -298,7 +298,58 @@ autostart.addEventListener("change", () => {
   });
 });
 
-invoke("begin_hotkey").then(
-  (keys) => (hotkey.textContent = `${keys}: 영역 선택 시작 · Enter: 녹화 끝 · Esc: 취소`),
-  (problem) => (hotkey.textContent = problem),
-);
+const hotkeyInput = document.querySelector("#hotkey-input");
+const DEFAULT_HOTKEY = "Win+Shift+G";
+let hotkeyNow = "";
+
+function showHotkey(keys) {
+  hotkeyNow = keys;
+  hotkeyInput.value = keys;
+  hotkey.textContent = `${keys}: 영역 선택 시작 · Enter: 녹화 끝 · Esc: 취소`;
+}
+
+invoke("begin_hotkey").then(showHotkey, (problem) => {
+  hotkey.textContent = problem;
+  hotkeyInput.value = "";
+});
+
+function changeHotkey(text) {
+  invoke("set_begin_hotkey", { text }).then(showHotkey, (problem) => {
+    hotkeyInput.value = hotkeyNow;
+    status.textContent = problem;
+  });
+}
+
+const MODIFIER_KEYS = ["Control", "Shift", "Alt", "Meta", "OS"];
+
+function pressedHotkey(event) {
+  const held = [
+    [event.metaKey, "Win"],
+    [event.ctrlKey, "Ctrl"],
+    [event.altKey, "Alt"],
+    [event.shiftKey, "Shift"],
+  ]
+    .filter(([down]) => down)
+    .map(([, name]) => name);
+  if (MODIFIER_KEYS.includes(event.key)) return { held, key: null };
+  const key = /^Key([A-Z])$/.exec(event.code)?.[1] ?? /^Digit([0-9])$/.exec(event.code)?.[1] ?? /^F([0-9]{1,2})$/.exec(event.code)?.[0] ?? event.key;
+  return { held, key };
+}
+
+hotkeyInput.addEventListener("focus", () => (hotkeyInput.value = "새 단축키를 누르세요"));
+hotkeyInput.addEventListener("blur", () => (hotkeyInput.value = hotkeyNow));
+hotkeyInput.addEventListener("keydown", (event) => {
+  event.preventDefault();
+  if (event.key === "Escape") {
+    hotkeyInput.blur();
+    return;
+  }
+  const { held, key } = pressedHotkey(event);
+  if (key === null) {
+    hotkeyInput.value = held.length ? `${held.join("+")}+…` : "새 단축키를 누르세요";
+    return;
+  }
+  hotkeyInput.blur();
+  changeHotkey([...held, key].join("+"));
+});
+document.querySelector("#hotkey-default").addEventListener("click", () => changeHotkey(DEFAULT_HOTKEY));

@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod begin_key;
 mod choice;
 mod sample;
 mod save;
@@ -110,7 +111,7 @@ fn hide_to_tray(window: &tauri::Window) {
     let _ = window.hide();
     let app = window.app_handle();
     if !app.state::<ToldAboutTheTray>().0.swap(true, Ordering::Relaxed) {
-        let hotkey = app.state::<BeginHotkey>().0.ok().map(|()| Hotkey::DEFAULT_BEGIN_SELECTION);
+        let hotkey = app.state::<BeginHotkey>().working();
         let body = format!("{} 완전히 끄려면 트레이 메뉴의 [종료]를 누르세요.", tray::how_to_start(hotkey));
         notify(app, "midi는 트레이에서 계속 실행됩니다", &body);
     }
@@ -144,6 +145,11 @@ impl Drop for TrayBackToIdle<'_> {
 
 const SETTINGS_FILE: &str = "settings.json";
 const REGION_FILE: &str = "region.json";
+const HOTKEY_FILE: &str = "hotkey.json";
+
+fn hotkey_file(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|folder| folder.join(HOTKEY_FILE))
+}
 
 fn region_file(app: &AppHandle) -> Option<PathBuf> {
     app.path().app_config_dir().ok().map(|folder| folder.join(REGION_FILE))
@@ -187,7 +193,18 @@ const BEGIN_KEY: u32 = 1;
 const STOP_KEY: u32 = 2;
 const CANCEL_KEY: u32 = 3;
 
-struct BeginHotkey(Result<(), HotkeyTaken>);
+struct BeginHotkey(Mutex<(Hotkey, bool)>);
+
+impl BeginHotkey {
+    fn now(&self) -> (Hotkey, bool) {
+        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn working(&self) -> Option<Hotkey> {
+        let (hotkey, registered) = self.now();
+        registered.then_some(hotkey)
+    }
+}
 
 struct KeysWhileRecording<'a>(&'a Hotkeys);
 
@@ -214,10 +231,29 @@ fn on_hotkey(app: &AppHandle, id: u32) {
 
 #[tauri::command]
 fn begin_hotkey(begin: State<BeginHotkey>) -> Result<String, String> {
-    let hotkey = Hotkey::DEFAULT_BEGIN_SELECTION;
-    begin.0.map(|()| hotkey.to_string()).map_err(|HotkeyTaken| {
-        format!("{hotkey} 단축키를 다른 프로그램이 쓰고 있어서 등록하지 못했습니다. [녹화 시작] 버튼을 쓰세요.")
-    })
+    match begin.now() {
+        (hotkey, true) => Ok(hotkey.to_string()),
+        (hotkey, false) => Err(format!("{} 다른 단축키로 바꾸거나 [녹화 시작] 버튼을 쓰세요.", begin_key::taken(hotkey))),
+    }
+}
+
+#[tauri::command]
+fn set_begin_hotkey(app: AppHandle, text: String) -> Result<String, String> {
+    let wanted: Hotkey = text.parse().map_err(begin_key::explain)?;
+    let hotkeys = app.state::<Hotkeys>();
+    let begin = app.state::<BeginHotkey>();
+    let mut now = begin.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let register = |hotkey: Hotkey| hotkeys.register(BEGIN_KEY, hotkey.into());
+    match *now {
+        (current, true) => begin_key::change(current, wanted, register, || hotkeys.unregister(BEGIN_KEY))?,
+        (_, false) => register(wanted).map_err(|HotkeyTaken| begin_key::taken(wanted))?,
+    }
+    *now = (wanted, true);
+    if let Some(file) = hotkey_file(&app) {
+        settings::store_hotkey(&file, wanted)
+            .map_err(|error| format!("단축키는 바꿨지만 {}에 저장하지 못했습니다: {error}", file.display()))?;
+    }
+    Ok(wanted.to_string())
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -363,14 +399,17 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
             let hotkeys = Hotkeys::listen(move |id| on_hotkey(&handle, id));
-            let begin = hotkeys.register(BEGIN_KEY, Hotkey::DEFAULT_BEGIN_SELECTION.into());
-            app.manage(BeginHotkey(begin));
+            let chosen = hotkey_file(app.handle())
+                .and_then(|file| settings::load_hotkey(&file))
+                .unwrap_or(Hotkey::DEFAULT_BEGIN_SELECTION);
+            let begin = hotkeys.register(BEGIN_KEY, chosen.into());
+            app.manage(BeginHotkey(Mutex::new((chosen, begin.is_ok()))));
             app.manage(hotkeys);
             tray::install(app.handle(), on_tray)?;
             if !tray::starts_hidden(std::env::args()) {
                 show_main_window(app.handle());
             } else if begin.is_err() {
-                let notice = tray::hotkey_taken_notice(Hotkey::DEFAULT_BEGIN_SELECTION);
+                let notice = tray::hotkey_taken_notice(chosen);
                 notify(app.handle(), "단축키를 쓸 수 없습니다", &notice);
             }
             Ok(())
@@ -381,7 +420,7 @@ fn main() {
                 hide_to_tray(window);
             }
         })
-        .invoke_handler(tauri::generate_handler![make_sample_gif, begin_recording, last_gif, stop_recording, cancel_recording, begin_hotkey, show_saved_gif, quality_levels, saved_settings, remember_settings, autostart_enabled, set_autostart])
+        .invoke_handler(tauri::generate_handler![make_sample_gif, begin_recording, last_gif, stop_recording, cancel_recording, begin_hotkey, set_begin_hotkey, show_saved_gif, quality_levels, saved_settings, remember_settings, autostart_enabled, set_autostart])
         .run(tauri::generate_context!())
         .expect("the app window can be created");
 }

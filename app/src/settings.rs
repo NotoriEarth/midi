@@ -3,6 +3,7 @@ use std::io;
 use std::path::Path;
 
 use gif_core::fit::EncodeSettings;
+use gif_core::hotkey::Hotkey;
 use gif_core::resize::OutputSize;
 use gif_core::session::{MonitorId, ScreenRect};
 
@@ -65,6 +66,15 @@ pub fn load_region(file: &Path) -> Option<ScreenRect> {
 pub fn store_region(file: &Path, region: ScreenRect) -> io::Result<()> {
     let ScreenRect { monitor: MonitorId(monitor), x, y, width, height } = region;
     write_replacing(file, &serde_json::to_string(&StoredRegion { monitor, x, y, width, height })?)
+}
+
+pub fn load_hotkey(file: &Path) -> Option<Hotkey> {
+    let text: String = serde_json::from_str(&fs::read_to_string(file).ok()?).ok()?;
+    text.parse().ok()
+}
+
+pub fn store_hotkey(file: &Path, hotkey: Hotkey) -> io::Result<()> {
+    write_replacing(file, &serde_json::to_string(&hotkey.to_string())?)
 }
 
 fn write_replacing(file: &Path, text: &str) -> io::Result<()> {
@@ -243,6 +253,26 @@ mod tests {
         store_region(&file, RECORDED).unwrap();
 
         assert_eq!(load_region(&file), Some(RECORDED));
+    }
+
+    #[test]
+    fn a_changed_hotkey_comes_back() {
+        let file = empty_folder("hotkey").join("hotkey.json");
+        let chosen: Hotkey = "Ctrl+Alt+G".parse().unwrap();
+
+        store_hotkey(&file, chosen).unwrap();
+
+        assert_eq!(load_hotkey(&file), Some(chosen));
+        assert_eq!(fs::read_to_string(&file).unwrap(), r#""Ctrl+Alt+G""#);
+    }
+
+    #[test]
+    fn without_a_readable_hotkey_file_there_is_no_changed_hotkey() {
+        let folder = empty_folder("no-hotkey");
+        fs::create_dir_all(&folder).unwrap();
+        assert_eq!(load_hotkey(&folder.join("hotkey.json")), None);
+        fs::write(folder.join("hotkey.json"), r#""G""#).unwrap();
+        assert_eq!(load_hotkey(&folder.join("hotkey.json")), None, "a hotkey without a modifier is not kept");
     }
 
     #[test]

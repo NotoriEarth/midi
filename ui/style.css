@@ -64,6 +64,17 @@ label.inline {
   gap: 8px;
 }
 
+.hotkey-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#hotkey-input {
+  width: 14em;
+  cursor: pointer;
+}
+
 output {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
