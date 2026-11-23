@@ -9,7 +9,7 @@ use gif_core::resize::{OutputSize, ResizeError};
 use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
 use gif_win::{
-    CaptureError, PanelButton, RecordingBorder, RecordingPanel, ScreenCapturer, Spool, adjust_frame, free_disk_bytes,
+    CaptureError, PanelButton, in_remote_session, RecordingBorder, RecordingPanel, ScreenCapturer, Spool, adjust_frame, free_disk_bytes,
     record_screen, select_region,
 };
 
@@ -280,7 +280,18 @@ fn explain_resize(error: ResizeError) -> String {
     }
 }
 
+pub const REMOTE_DESKTOP: &str = "현재 Desktop Duplication은 원격 데스크톱에서 녹화할 수 없습니다. 설정으로 가서 GDI로 바꿔주세요.";
+
 fn explain_capture(error: CaptureError) -> String {
+    explain_capture_in(error, in_remote_session())
+}
+
+fn explain_capture_in(error: CaptureError, remote: bool) -> String {
+    let duplication_failed =
+        matches!(error, CaptureError::System(_) | CaptureError::NoFrameYet | CaptureError::AccessLost | CaptureError::NoSuchMonitor(_));
+    if remote && duplication_failed {
+        return REMOTE_DESKTOP.to_string();
+    }
     match error {
         CaptureError::NoSuchMonitor(_) => {
             "캡처할 모니터를 찾지 못했습니다. 화면이 잠겨 있지 않은지 확인하세요.".to_string()
@@ -301,6 +312,21 @@ mod tests {
     use std::time::{Duration, Instant};
 
     static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_failed_capture_over_remote_desktop_says_so() {
+        let failed = CaptureError::System("오류입니다. (0x8000FFFF)".to_string());
+        assert_eq!(explain_capture_in(failed.clone(), true), REMOTE_DESKTOP);
+        assert_eq!(explain_capture_in(CaptureError::NoFrameYet, true), REMOTE_DESKTOP);
+        assert_eq!(explain_capture_in(CaptureError::NoSuchMonitor(PRIMARY), true), REMOTE_DESKTOP);
+        assert_eq!(explain_capture_in(failed, false), "화면을 캡처하지 못했습니다: System(\"오류입니다. (0x8000FFFF)\")");
+    }
+
+    #[test]
+    fn a_region_problem_is_explained_the_same_way_over_remote_desktop() {
+        let outside = CaptureError::RegionOutsideMonitor { monitor_width: 10, monitor_height: 10 };
+        assert_eq!(explain_capture_in(outside.clone(), true), explain_capture_in(outside, false));
+    }
 
     const SMALL: ScreenRect = ScreenRect { monitor: PRIMARY, x: 0, y: 0, width: 160, height: 90 };
     const SETTINGS: EncodeSettings = EncodeSettings { quality: Quality::Level(3), dither: 0.5 };

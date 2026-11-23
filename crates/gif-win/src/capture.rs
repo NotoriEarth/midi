@@ -4,7 +4,7 @@ use gif_core::session::{MonitorId, ScreenRect};
 use gif_core::writer::Rgb;
 use windows::Win32::Foundation::{HMODULE, POINT, RECT};
 use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext};
-use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetSystemMetrics, SM_REMOTESESSION};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
@@ -180,6 +180,10 @@ fn every_monitor() -> Result<Vec<RECT>, CaptureError> {
         }
     }
     Ok(areas)
+}
+
+pub fn in_remote_session() -> bool {
+    unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
 }
 
 pub fn monitor_at_cursor() -> MonitorId {
