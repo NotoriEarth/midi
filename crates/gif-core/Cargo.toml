@@ -1,0 +1,9 @@
+[package]
+name = "gif-core"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+gif = "0.13"

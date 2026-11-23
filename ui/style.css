@@ -1,0 +1,148 @@
+:root {
+  color-scheme: light dark;
+  --text: #1c1d21;
+  --muted: #62656d;
+  --surface: #f6f6f8;
+  --panel: #ffffff;
+  --line: #d9dbe1;
+  --accent: #3a5bd9;
+  --accent-text: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #ececf1;
+    --muted: #a3a6b0;
+    --surface: #17181c;
+    --panel: #212329;
+    --line: #363944;
+    --accent: #7f9cff;
+    --accent-text: #10121a;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: 15px/1.5 "Segoe UI", "Malgun Gothic", sans-serif;
+}
+
+main {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+h1 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.hint,
+#status {
+  color: var(--muted);
+}
+
+form {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+}
+
+label.inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hotkey-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#hotkey-input {
+  width: 14em;
+  cursor: pointer;
+}
+
+output {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+select,
+button,
+input[type="number"] {
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+
+button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+#preview {
+  display: block;
+  width: 100%;
+  image-rendering: pixelated;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.actions button {
+  flex: 1;
+}
+
+fieldset {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+legend {
+  padding: 0;
+  margin-bottom: 6px;
+}
+
+.pair {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pair[hidden] {
+  display: none;
+}
+
+.pair input {
+  width: 7em;
+}
