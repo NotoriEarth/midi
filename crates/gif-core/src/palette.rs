@@ -38,18 +38,18 @@ impl Palette {
         }
 
         let mut boxes = Vec::with_capacity(max_colors);
-        boxes.push(0..colors.len());
+        boxes.push(ColorBox::new(0..colors.len(), &colors));
         while boxes.len() < max_colors {
-            let Some(widest) = widest_box_that_can_split(&colors, &boxes) else {
+            let Some(widest) = widest_box_that_can_split(&boxes) else {
                 break;
             };
-            let Range { start, end } = boxes.swap_remove(widest);
-            let cut = start + split_at_median(&mut colors[start..end]);
-            boxes.push(start..cut);
-            boxes.push(cut..end);
+            let ColorBox { colors: Range { start, end }, widest: (_, channel), pixels } = boxes.swap_remove(widest);
+            let cut = start + split_at_median(&mut colors[start..end], channel, pixels);
+            boxes.push(ColorBox::new(start..cut, &colors));
+            boxes.push(ColorBox::new(cut..end, &colors));
         }
 
-        Ok(Palette(boxes.into_iter().map(|range| average(&colors[range])).collect()))
+        Ok(Palette(boxes.into_iter().map(|color_box| average(&colors[color_box.colors])).collect()))
     }
 
     pub fn colors(&self) -> &[Rgb] {
@@ -157,21 +157,30 @@ fn pixel_count(colors: &[CountedColor]) -> u64 {
     colors.iter().map(|&(_, count)| u64::from(count)).sum()
 }
 
-fn widest_box_that_can_split(colors: &[CountedColor], boxes: &[Range<usize>]) -> Option<usize> {
-    (0..boxes.len())
-        .rev()
-        .filter(|&index| boxes[index].len() > 1)
-        .max_by_key(|&index| {
-            let colors = &colors[boxes[index].clone()];
-            (widest_channel(colors).0, pixel_count(colors))
-        })
+struct ColorBox {
+    colors: Range<usize>,
+    widest: (u8, usize),
+    pixels: u64,
 }
 
-fn split_at_median(colors: &mut [CountedColor]) -> usize {
-    let (_, channel) = widest_channel(colors);
+impl ColorBox {
+    fn new(colors: Range<usize>, every_color: &[CountedColor]) -> Self {
+        let inside = &every_color[colors.clone()];
+        ColorBox { widest: widest_channel(inside), pixels: pixel_count(inside), colors }
+    }
+}
+
+fn widest_box_that_can_split(boxes: &[ColorBox]) -> Option<usize> {
+    (0..boxes.len())
+        .rev()
+        .filter(|&index| boxes[index].colors.len() > 1)
+        .max_by_key(|&index| (boxes[index].widest.0, boxes[index].pixels))
+}
+
+fn split_at_median(colors: &mut [CountedColor], channel: usize, pixels: u64) -> usize {
     colors.sort_unstable_by_key(|&(color, _)| (color[channel], color));
 
-    let half = pixel_count(colors).div_ceil(2);
+    let half = pixels.div_ceil(2);
     let mut seen = 0;
     let reaches_half = colors.iter().position(|&(_, count)| {
         seen += u64::from(count);
