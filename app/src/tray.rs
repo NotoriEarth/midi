@@ -4,6 +4,8 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::AppHandle;
 
+use gif_core::hotkey::Hotkey;
+
 const TRAY_ID: &str = "main";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +35,17 @@ pub const START_HIDDEN: &str = "--hidden";
 
 pub fn starts_hidden<T: AsRef<str>>(arguments: impl IntoIterator<Item = T>) -> bool {
     arguments.into_iter().any(|argument| argument.as_ref() == START_HIDDEN)
+}
+
+pub fn how_to_start(hotkey: Option<Hotkey>) -> String {
+    match hotkey {
+        Some(hotkey) => format!("{hotkey}나 트레이 아이콘 클릭으로 녹화를 시작합니다."),
+        None => "트레이 아이콘 클릭으로 녹화를 시작합니다.".to_string(),
+    }
+}
+
+pub fn hotkey_taken_notice(hotkey: Hotkey) -> String {
+    format!("{hotkey}를 다른 프로그램이 쓰고 있어서 등록하지 못했습니다. 트레이 아이콘을 클릭해 녹화를 시작하세요.")
 }
 
 pub fn tooltip(state: TrayState) -> String {
@@ -135,5 +148,20 @@ mod tests {
         assert!(!starts_hidden(["midi-app.exe"]));
         assert!(!starts_hidden(["midi-app.exe", "--hiddenness"]));
         assert!(!starts_hidden(Vec::<String>::new()));
+    }
+
+    #[test]
+    fn the_ways_to_start_leave_out_a_hotkey_that_could_not_be_registered() {
+        let hotkey = Hotkey::DEFAULT_BEGIN_SELECTION;
+        assert_eq!(how_to_start(Some(hotkey)), "Win+Shift+G나 트레이 아이콘 클릭으로 녹화를 시작합니다.");
+        assert_eq!(how_to_start(None), "트레이 아이콘 클릭으로 녹화를 시작합니다.");
+    }
+
+    #[test]
+    fn a_taken_hotkey_is_named_along_with_what_to_do_instead() {
+        assert_eq!(
+            hotkey_taken_notice(Hotkey::DEFAULT_BEGIN_SELECTION),
+            "Win+Shift+G를 다른 프로그램이 쓰고 있어서 등록하지 못했습니다. 트레이 아이콘을 클릭해 녹화를 시작하세요."
+        );
     }
 }

@@ -110,8 +110,8 @@ fn hide_to_tray(window: &tauri::Window) {
     let _ = window.hide();
     let app = window.app_handle();
     if !app.state::<ToldAboutTheTray>().0.swap(true, Ordering::Relaxed) {
-        let start = Hotkey::DEFAULT_BEGIN_SELECTION;
-        let body = format!("{start}나 트레이 아이콘 클릭으로 녹화를 시작합니다. 완전히 끄려면 트레이 메뉴의 [종료]를 누르세요.");
+        let hotkey = app.state::<BeginHotkey>().0.ok().map(|()| Hotkey::DEFAULT_BEGIN_SELECTION);
+        let body = format!("{} 완전히 끄려면 트레이 메뉴의 [종료]를 누르세요.", tray::how_to_start(hotkey));
         notify(app, "midi는 트레이에서 계속 실행됩니다", &body);
     }
 }
@@ -369,6 +369,9 @@ fn main() {
             tray::install(app.handle(), on_tray)?;
             if !tray::starts_hidden(std::env::args()) {
                 show_main_window(app.handle());
+            } else if begin.is_err() {
+                let notice = tray::hotkey_taken_notice(Hotkey::DEFAULT_BEGIN_SELECTION);
+                notify(app.handle(), "단축키를 쓸 수 없습니다", &notice);
             }
             Ok(())
         })
