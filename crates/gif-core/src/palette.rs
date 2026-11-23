@@ -65,7 +65,9 @@ impl Palette {
     }
 
     pub fn lookup(&self) -> NearestColor<'_> {
-        NearestColor { palette: self, answers: vec![NOT_ASKED_YET; EVERY_RGB_COLOR] }
+        let mut by_green: Vec<(Rgb, u8)> = self.0.iter().enumerate().map(|(index, &color)| (color, index as u8)).collect();
+        by_green.sort_by_key(|&(color, index)| (color[GREEN], index));
+        NearestColor { palette: self, by_green, answers: vec![NOT_ASKED_YET; EVERY_RGB_COLOR] }
     }
 
     pub fn nearest(&self, pixel: Rgb) -> u8 {
@@ -78,10 +80,12 @@ impl Palette {
 
 const EVERY_RGB_COLOR: usize = 1 << 24;
 const NOT_ASKED_YET: u8 = u8::MAX;
+const GREEN: usize = 1;
 
 #[derive(Debug, Clone)]
 pub struct NearestColor<'a> {
     palette: &'a Palette,
+    by_green: Vec<(Rgb, u8)>,
     answers: Vec<u8>,
 }
 
@@ -93,9 +97,34 @@ impl NearestColor<'_> {
     pub fn of(&mut self, pixel: Rgb) -> u8 {
         let slot = slot_of(pixel);
         if self.answers[slot] == NOT_ASKED_YET {
-            self.answers[slot] = self.palette.nearest(pixel);
+            self.answers[slot] = self.search(pixel);
         }
         self.answers[slot]
+    }
+
+    #[inline(never)]
+    fn search(&self, pixel: Rgb) -> u8 {
+        let green = pixel[GREEN];
+        let above = self.by_green.partition_point(|&(color, _)| color[GREEN] < green);
+        let mut best = (u32::MAX, u8::MAX);
+        let mut consider = |&(color, index): &(Rgb, u8)| {
+            if u32::from(color[GREEN].abs_diff(green)).pow(2) > best.0 {
+                return false;
+            }
+            best = best.min((squared_distance(color, pixel), index));
+            true
+        };
+        for entry in &self.by_green[above..] {
+            if !consider(entry) {
+                break;
+            }
+        }
+        for entry in self.by_green[..above].iter().rev() {
+            if !consider(entry) {
+                break;
+            }
+        }
+        best.1
     }
 }
 
@@ -294,6 +323,33 @@ mod tests {
         let between_palette_colors = (0..4000u32).map(|n| [(n * 31) as u8, (n * 3) as u8, (n * 17) as u8]);
         for color in many_colors().into_iter().chain(between_palette_colors) {
             assert_eq!(lookup.of(color), palette.nearest(color), "{color:?}");
+        }
+    }
+
+    #[test]
+    fn a_color_as_near_to_two_palette_colors_gets_the_earlier_one() {
+        let palette = Palette(vec![[0, 40, 0], [0, 20, 0], [0, 0, 0], [0, 20, 0], [10, 30, 0]]);
+        let mut lookup = palette.lookup();
+
+        assert_eq!(palette.nearest([0, 10, 0]), 1);
+        for color in [[0, 10, 0], [0, 30, 0], [5, 25, 0], [0, 20, 0], [0, 50, 0], [5, 35, 0], [10, 10, 0]] {
+            assert_eq!(lookup.of(color), palette.nearest(color), "{color:?}");
+        }
+    }
+
+    #[test]
+    fn the_lookup_answers_like_searching_every_palette_color_across_all_colors() {
+        let palette = Palette::from_frames(&[&many_colors()], Palette::MAX_COLORS).unwrap();
+        let mut lookup = palette.lookup();
+
+        let steps = (0..=255u8).step_by(7);
+        for red in steps.clone() {
+            for green in steps.clone() {
+                for blue in steps.clone() {
+                    let color = [red, green, blue];
+                    assert_eq!(lookup.of(color), palette.nearest(color), "{color:?}");
+                }
+            }
         }
     }
 
