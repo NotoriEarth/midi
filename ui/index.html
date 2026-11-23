@@ -7,110 +7,142 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <main>
-      <h1>GIF 만들기</h1>
-      <p class="hint">샘플 영상을 만들거나, 주 모니터에서 드래그한 영역을 녹화해 GIF로 만듭니다.</p>
-
-      <form id="settings" novalidate>
-        <label>
-          프레임 수(fps)
-          <select id="fps">
-            <option value="10">10</option>
-            <option value="15">15</option>
-            <option value="30">30</option>
-          </select>
-        </label>
-
-        <label>
-          영역 정하기
-          <select id="selection">
-            <option value="drag">드래그해서</option>
-            <option value="frame">녹화 틀 (지난 위치에서 시작)</option>
-          </select>
-        </label>
-
-        <label>
-          녹화 시작
-          <select id="record-control">
-            <option value="immediate">드래그를 마치면 바로</option>
-            <option value="button">드래그한 뒤 틀로 다듬고 [● 시작]을 눌러서</option>
-          </select>
-          <small id="record-control-hint" class="hint" hidden>녹화 틀은 항상 [● 시작]으로 시작합니다.</small>
-        </label>
-
-        <fieldset>
-          <legend>크기</legend>
-          <select id="size-mode" aria-label="크기 정하는 방법">
-            <option value="original" selected>드래그한 영역 그대로</option>
-            <option value="fit">가로×세로 지정</option>
-          </select>
-          <div id="size-box" class="pair" hidden>
-            <input id="size-width" type="number" min="1" max="4096" value="480" aria-label="가로 픽셀" />
-            <span>×</span>
-            <input id="size-height" type="number" min="1" max="4096" value="270" aria-label="세로 픽셀" />
-          </div>
-          <small class="hint">
-            녹화에 적용됩니다. 지정하면 비율을 유지한 채 그 크기 안에 들어가도록 줄이고(영역이 더 작으면 키우지
-            않음), 용량 목표가 있어도 바뀌지 않습니다.
-          </small>
-        </fieldset>
-
-        <label>
-          화질 단계
-          <select id="level">
-            <option value="" selected>자동 (용량 목표가 없으면 1단계)</option>
-          </select>
-        </label>
-
-        <fieldset>
-          <legend>용량 목표</legend>
-          <select id="max-size" aria-label="용량 목표">
-            <option value="" selected>없음</option>
-            <option value="1">1MB 이하</option>
-            <option value="2">2MB 이하</option>
-            <option value="5">5MB 이하</option>
-            <option value="8">8MB 이하</option>
-            <option value="10">10MB 이하</option>
-            <option value="custom">직접 입력</option>
-          </select>
-          <div id="max-size-box" class="pair" hidden>
-            <input id="max-size-custom" type="number" min="0.01" step="0.01" value="3" aria-label="용량 목표(MB)" />
-            <span>MB 이하</span>
-          </div>
-          <small id="max-size-hint" class="hint"></small>
-        </fieldset>
-
-        <label>
-          디더링 강도 <output id="dither-value">1</output>
-          <input id="dither" type="range" min="0" max="1" step="0.05" value="1" />
-        </label>
-
+    <main class="app">
+      <header class="top">
+        <h1>GIF 만들기</h1>
+        <p id="hotkey" class="hint"></p>
         <div class="actions">
-          <button id="make" type="submit">샘플 만들기</button>
           <button id="record" type="button">녹화 시작</button>
           <button id="cancel" type="button" aria-label="녹화 취소" hidden>✕</button>
         </div>
-      </form>
+      </header>
 
-      <p id="hotkey" class="hint"></p>
-      <div class="hotkey-row">
-        <label class="inline">
-          녹화 시작 단축키
-          <input id="hotkey-input" type="text" readonly />
-        </label>
-        <button id="hotkey-default" type="button">기본값</button>
+      <div class="stage-row">
+        <div class="stage">
+          <img
+            id="preview"
+            alt="만들어진 GIF 미리보기"
+            hidden
+          />
+          <div class="empty">
+            <div class="empty-frame" aria-hidden="true"></div>
+            <strong>아직 녹화한 GIF가 없습니다</strong>
+            <p class="hint">단축키나 [녹화 시작]으로 녹화하면 여기에 미리보기가 나옵니다.</p>
+          </div>
+        </div>
+
+        <section class="result" aria-labelledby="result-caption">
+          <h2 id="result-caption" class="caption">녹화 결과</h2>
+          <p id="status" role="status">설정을 고르고 [녹화 시작]을 누르세요.</p>
+          <p id="encoded" class="hint" hidden></p>
+          <p id="saved" hidden>
+            <span id="saved-path"></span>
+            <button id="show-saved" type="button">폴더에서 보기</button>
+          </p>
+        </section>
       </div>
-      <label class="inline">
-        <input id="autostart" type="checkbox" />
-        Windows를 시작할 때 트레이에서 실행
-      </label>
-      <p id="status" role="status">설정을 고르고 버튼을 누르세요.</p>
-      <p id="encoded" class="hint" hidden></p>
-      <p id="saved" hidden>
-        <span id="saved-path"></span>
-        <button id="show-saved" type="button">폴더에서 보기</button>
-      </p>
-      <img id="preview" alt="만들어진 GIF 미리보기" hidden />
+
+      <section class="settings" aria-label="녹화 설정">
+        <form id="settings" novalidate>
+          <div class="col col-a">
+            <h2 class="caption">녹화</h2>
+            <label class="row">
+              <span class="name">프레임 수</span>
+              <select id="fps">
+                <option value="10">10 fps</option>
+                <option value="15">15 fps</option>
+                <option value="30">30 fps</option>
+              </select>
+            </label>
+
+            <label class="row">
+              <span class="name">영역 정하기</span>
+              <select id="selection">
+                <option value="drag">드래그해서</option>
+                <option value="frame">녹화 틀 (지난 위치에서 시작)</option>
+              </select>
+            </label>
+
+            <label class="row">
+              <span class="name">녹화 시작</span>
+              <select id="record-control">
+                <option value="immediate">드래그를 마치면 바로</option>
+                <option value="button">드래그 뒤 틀로 다듬고 [● 시작]으로</option>
+              </select>
+              <small id="record-control-hint" class="hint" hidden>녹화 틀은 항상 [● 시작]으로 시작합니다.</small>
+            </label>
+
+            <div class="row" role="group" aria-labelledby="size-name">
+              <span id="size-name" class="name">크기</span>
+              <div class="ctl">
+                <select id="size-mode" aria-label="크기 정하는 방법">
+                  <option value="original" selected>드래그한 영역 그대로</option>
+                  <option value="fit">가로×세로 지정</option>
+                </select>
+                <div id="size-box" class="pair" hidden>
+                  <input id="size-width" type="number" min="1" max="4096" value="480" aria-label="가로 픽셀" />
+                  <span>×</span>
+                  <input id="size-height" type="number" min="1" max="4096" value="270" aria-label="세로 픽셀" />
+                </div>
+              </div>
+              <small class="hint">비율을 지켜 이 크기 안으로 줄이며(키우지 않음), 용량 목표로도 바뀌지 않습니다.</small>
+            </div>
+          </div>
+
+          <div class="col col-b">
+            <h2 class="caption">GIF</h2>
+            <label class="row">
+              <span class="name">화질 단계</span>
+              <select id="level">
+                <option value="" selected>자동 (용량 목표가 없으면 1단계)</option>
+              </select>
+            </label>
+
+            <div class="row" role="group" aria-labelledby="max-size-name">
+              <span id="max-size-name" class="name">용량 목표</span>
+              <div class="ctl">
+                <select id="max-size" aria-label="용량 목표">
+                  <option value="" selected>없음</option>
+                  <option value="1">1MB 이하</option>
+                  <option value="2">2MB 이하</option>
+                  <option value="5">5MB 이하</option>
+                  <option value="8">8MB 이하</option>
+                  <option value="10">10MB 이하</option>
+                  <option value="custom">직접 입력</option>
+                </select>
+                <div id="max-size-box" class="pair" hidden>
+                  <input id="max-size-custom" type="number" min="0.01" step="0.01" value="3" aria-label="용량 목표(MB)" />
+                  <span>MB 이하</span>
+                </div>
+              </div>
+              <small id="max-size-hint" class="hint"></small>
+            </div>
+
+            <label class="row">
+              <span class="name">디더링 강도</span>
+              <span class="range">
+                <input id="dither" type="range" min="0" max="1" step="0.05" value="1" />
+                <output id="dither-value">1</output>
+              </span>
+            </label>
+          </div>
+        </form>
+
+        <div class="col prefs">
+          <h2 class="caption">앱</h2>
+          <div class="row">
+            <label class="name" for="hotkey-input">녹화 단축키</label>
+            <div class="ctl">
+              <input id="hotkey-input" type="text" readonly />
+              <button id="hotkey-default" type="button">기본값</button>
+            </div>
+          </div>
+          <label class="check">
+            <input id="autostart" type="checkbox" />
+            Windows를 시작할 때 트레이에서 실행
+          </label>
+        </div>
+      </section>
     </main>
     <script src="main.js"></script>
   </body>
