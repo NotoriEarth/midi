@@ -14,23 +14,29 @@ impl FramePatch {
 }
 
 pub(crate) fn changed_patch(previous: &[u8], current: &[u8], width: usize, transparent: u8) -> FramePatch {
-    let changed = |index: &usize| previous[*index] != current[*index];
-    let changed_columns = || (0..current.len()).filter(changed).map(|index| index % width);
-    let changed_rows = || (0..current.len()).filter(changed).map(|index| index / width);
-
-    let (Some(left), Some(right), Some(top), Some(bottom)) = (
-        changed_columns().min(),
-        changed_columns().max(),
-        changed_rows().min(),
-        changed_rows().max(),
-    ) else {
+    let rows = previous.chunks_exact(width).zip(current.chunks_exact(width));
+    let mut bounds: Option<(usize, usize, usize, usize)> = None;
+    for (y, (before, after)) in rows.enumerate() {
+        let differs = |(a, b): (&u8, &u8)| a != b;
+        let Some(first) = before.iter().zip(after).position(differs) else {
+            continue;
+        };
+        let last = before.iter().zip(after).rposition(differs).expect("a row with a change has a last change");
+        bounds = Some(match bounds {
+            None => (first, last, y, y),
+            Some((left, right, top, _)) => (left.min(first), right.max(last), top, y),
+        });
+    }
+    let Some((left, right, top, bottom)) = bounds else {
         return FramePatch { left: 0, top: 0, width: 1, height: 1, pixels: vec![transparent] };
     };
 
-    let pixels = (top..=bottom)
-        .flat_map(|y| (left..=right).map(move |x| y * width + x))
-        .map(|index| if changed(&index) { current[index] } else { transparent })
-        .collect();
+    let mut pixels = Vec::with_capacity((right - left + 1) * (bottom - top + 1));
+    for y in top..=bottom {
+        let span = y * width + left..=y * width + right;
+        let shown = previous[span.clone()].iter().zip(&current[span]);
+        pixels.extend(shown.map(|(&before, &after)| if before != after { after } else { transparent }));
+    }
     FramePatch { left, top, width: right - left + 1, height: bottom - top + 1, pixels }
 }
 
