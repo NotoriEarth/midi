@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>midi</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --text: #1c1d21;
+        --muted: #5e616a;
+        --surface: #f3f4f7;
+        --panel: #ffffff;
+        --field: #ffffff;
+        --line: #d9dbe1;
+        --accent: #3a5bd9;
+        --accent-text: #ffffff;
+        --rec: #ff5a5f;
+        --check-a: #e9ebf0;
+        --check-b: #f6f7f9;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --text: #ececf1;
+          --muted: #a3a6b0;
+          --surface: #17181c;
+          --panel: #212329;
+          --field: #1a1b20;
+          --line: #363944;
+          --accent: #7f9cff;
+          --accent-text: #10121a;
+          --rec: #e5484d;
+          --check-a: #1c1d22;
+          --check-b: #26282f;
+        }
+      }
+
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --text: #ececf1;
+        --muted: #a3a6b0;
+        --surface: #17181c;
+        --panel: #212329;
+        --field: #1a1b20;
+        --line: #363944;
+        --accent: #7f9cff;
+        --accent-text: #10121a;
+        --rec: #e5484d;
+        --check-a: #1c1d22;
+        --check-b: #26282f;
+      }
+
+      :root[data-theme="light"] {
+        color-scheme: light;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      body {
+        margin: 0;
+        background: var(--surface);
+        color: var(--text);
+        font: 13px/1.4 "Segoe UI", "Malgun Gothic", sans-serif;
+      }
+
+      /* 창 높이 = 머리줄 + 결과(남는 높이 전부) + 설정 */
+      .app {
+        box-sizing: border-box;
+        height: 100vh;
+        display: grid;
+        grid-template-rows: auto minmax(200px, 1fr) auto;
+        gap: 10px;
+        padding: 12px;
+      }
+
+      .top {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 16px;
+      }
+
+      #hotkey {
+        flex: 1;
+        min-width: 0;
+        margin: 0;
+      }
+
+      .actions {
+        display: flex;
+        gap: 6px;
+      }
+
+      select,
+      button,
+      input[type="number"],
+      input[type="text"] {
+        box-sizing: border-box;
+        height: 28px;
+        padding: 0 8px;
+        font: inherit;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--field);
+        color: var(--text);
+      }
+
+      button {
+        background: var(--panel);
+        cursor: pointer;
+        white-space: nowrap;
+      }
+
+      button:hover {
+        border-color: var(--accent);
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: progress;
+      }
+
+      select:disabled {
+        opacity: 0.55;
+      }
+
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      #record {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        height: 30px;
+        padding: 0 14px;
+        border-color: var(--accent);
+        background: var(--accent);
+        color: var(--accent-text);
+        font-weight: 600;
+      }
+
+      #record::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--rec);
+        box-shadow: 0 0 0 1.5px var(--accent-text);
+      }
+
+      #cancel {
+        width: 30px;
+        height: 30px;
+        padding: 0;
+      }
+
+      /* 결과: 왼쪽 미리보기(나중에 편집 캔버스), 오른쪽 정보 */
+      .stage-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 232px;
+        gap: 12px;
+        min-height: 0;
+      }
+
+      .stage {
+        position: relative;
+        min-height: 0;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background-color: var(--check-b);
+        background-image:
+          linear-gradient(45deg, var(--check-a) 25%, transparent 25%, transparent 75%, var(--check-a) 75%),
+          linear-gradient(45deg, var(--check-a) 25%, transparent 25%, transparent 75%, var(--check-a) 75%);
+        background-size: 16px 16px;
+        background-position: 0 0, 8px 8px;
+      }
+
+      #preview {
+        position: absolute;
+        inset: 8px;
+        width: calc(100% - 16px);
+        height: calc(100% - 16px);
+        object-fit: contain;
+        image-rendering: pixelated;
+      }
+
+      .empty {
+        position: absolute;
+        inset: 0;
+        display: none;
+        place-content: center;
+        justify-items: center;
+        gap: 6px;
+        padding: 16px;
+        text-align: center;
+        background: var(--panel);
+      }
+
+      #preview[hidden] ~ .empty {
+        display: grid;
+      }
+
+      .stage:has(#preview[hidden]) {
+        border-style: dashed;
+      }
+
+      .empty-frame {
+        width: 64px;
+        height: 40px;
+        margin-bottom: 4px;
+        border: 2px dashed var(--muted);
+        border-radius: 4px;
+        opacity: 0.6;
+      }
+
+      .empty strong {
+        font-size: 13px;
+      }
+
+      .empty p {
+        margin: 0;
+        max-width: 260px;
+      }
+
+      .result {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-height: 0;
+        overflow: auto;
+        padding: 10px 12px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      .caption {
+        margin: 0;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--muted);
+      }
+
+      #status,
+      #encoded {
+        margin: 0;
+      }
+
+      #saved {
+        display: grid;
+        gap: 6px;
+        margin: auto 0 0;
+        padding-top: 8px;
+        border-top: 1px solid var(--line);
+      }
+
+      #saved-path {
+        font-size: 12px;
+        line-height: 16px;
+        overflow-wrap: anywhere;
+      }
+
+      #show-saved {
+        justify-self: start;
+      }
+
+      /* 설정: 두 열. form은 display: contents라 칸들이 이 격자에 바로 놓인다 */
+      .settings {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: auto 1fr;
+        column-gap: 20px;
+        padding: 12px 14px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      #settings {
+        display: contents;
+      }
+
+      .col {
+        display: grid;
+        gap: 8px;
+        align-content: start;
+        min-width: 0;
+      }
+
+      .col-a {
+        grid-column: 1;
+        grid-row: 1 / 3;
+      }
+
+      .col-b {
+        grid-column: 2;
+        grid-row: 1;
+      }
+
+      .prefs {
+        grid-column: 2;
+        grid-row: 2;
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid var(--line);
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 70px minmax(0, 1fr);
+        column-gap: 8px;
+        row-gap: 3px;
+        align-items: center;
+      }
+
+      .row > select {
+        width: 100%;
+        min-width: 0;
+      }
+
+      .row > .hint {
+        grid-column: 2;
+        margin: 0;
+      }
+
+      .name {
+        white-space: nowrap;
+      }
+
+      .ctl {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+
+      .ctl > select {
+        flex: 1 1 0;
+        min-width: 0;
+      }
+
+      .pair {
+        display: flex;
+        flex: none;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .pair input {
+        width: 44px;
+        padding: 0 6px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+
+      input[type="number"]::-webkit-inner-spin-button,
+      input[type="number"]::-webkit-outer-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+
+      .range {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 28px;
+      }
+
+      .range input {
+        flex: 1;
+        min-width: 0;
+        margin: 0;
+        accent-color: var(--accent);
+      }
+
+      output {
+        width: 2.6em;
+        text-align: right;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+
+      #hotkey-input {
+        flex: 1;
+        min-width: 0;
+        cursor: pointer;
+      }
+
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .check input {
+        margin: 0;
+        accent-color: var(--accent);
+      }
+
+      /* 시안 전용: 상태 바꿔 보기. ui/index.html로 옮길 때 지운다 */
+      .demo {
+        position: fixed;
+        right: 3px;
+        bottom: 3px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .demo summary {
+        cursor: pointer;
+        list-style: none;
+        padding: 0 8px;
+        line-height: 18px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--panel);
+      }
+
+      .demo[open] summary {
+        border-radius: 9px 9px 0 0;
+      }
+
+      .demo-panel {
+        position: absolute;
+        right: 0;
+        bottom: 19px;
+        display: grid;
+        gap: 4px;
+        width: 210px;
+        padding: 8px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-shadow: 0 4px 16px rgb(0 0 0 / 0.18);
+      }
+
+      .demo-panel div {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+
+      .demo-panel button {
+        height: 24px;
+        padding: 0 6px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <header class="top">
+        <h1>GIF 만들기</h1>
+        <p id="hotkey" class="hint">Win+Shift+G: 영역 선택 시작 · Enter: 녹화 끝 · Esc: 취소</p>
+        <div class="actions">
+          <button id="record" type="button">녹화 시작</button>
+          <button id="cancel" type="button" aria-label="녹화 취소" hidden>✕</button>
+        </div>
+      </header>
+
+      <div class="stage-row">
+        <div class="stage">
+          <img
+            id="preview"
+            alt="만들어진 GIF 미리보기"
+            src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='637' height='421' viewBox='0 0 637 421'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%235f7cf0'/><stop offset='1' stop-color='%23c46bd6'/></linearGradient></defs><rect width='637' height='421' fill='url(%23g)'/><rect x='64' y='52' width='424' height='292' rx='10' fill='%23ffffff' fill-opacity='.94'/><rect x='64' y='52' width='424' height='34' rx='10' fill='%23e6e8f0'/><circle cx='86' cy='69' r='6' fill='%23ff6b6b'/><circle cx='106' cy='69' r='6' fill='%23ffc542'/><circle cx='126' cy='69' r='6' fill='%2350d17a'/><rect x='92' y='112' width='230' height='14' rx='7' fill='%23c4cadb'/><rect x='92' y='140' width='330' height='12' rx='6' fill='%23dfe3ed'/><rect x='92' y='164' width='290' height='12' rx='6' fill='%23dfe3ed'/><rect x='92' y='206' width='160' height='108' rx='8' fill='%23b4c3ff'/><rect x='268' y='206' width='190' height='12' rx='6' fill='%23dfe3ed'/><rect x='268' y='230' width='150' height='12' rx='6' fill='%23dfe3ed'/><path d='M530 250 v66 l17-15 l13 28 l11-5 l-13-27 l22-2 z' fill='%23111' stroke='%23fff' stroke-width='3' stroke-linejoin='round'/></svg>"
+          />
+          <div class="empty">
+            <div class="empty-frame" aria-hidden="true"></div>
+            <strong>아직 녹화한 GIF가 없습니다</strong>
+            <p class="hint">단축키나 [녹화 시작]으로 녹화하면 여기에 미리보기가 나옵니다.</p>
+          </div>
+        </div>
+
+        <section class="result" aria-labelledby="result-caption">
+          <h2 id="result-caption" class="caption">녹화 결과</h2>
+          <p id="status" role="status">2,184,330바이트, 5821ms</p>
+          <p id="encoded" class="hint">용량 목표에 맞춤: 크기 637×421 → 408×270, 화질 3단계 (128색, 열화 2)</p>
+          <p id="saved">
+            <span id="saved-path">저장: C:\Users\me\Pictures\midi\midi-20261123-140322.gif</span>
+            <button id="show-saved" type="button">폴더에서 보기</button>
+          </p>
+        </section>
+      </div>
+
+      <section class="settings" aria-label="녹화 설정">
+        <form id="settings" novalidate>
+          <div class="col col-a">
+            <h2 class="caption">녹화</h2>
+            <label class="row">
+              <span class="name">프레임 수</span>
+              <select id="fps">
+                <option value="10">10 fps</option>
+                <option value="15" selected>15 fps</option>
+                <option value="30">30 fps</option>
+              </select>
+            </label>
+
+            <label class="row">
+              <span class="name">영역 정하기</span>
+              <select id="selection">
+                <option value="drag">드래그해서</option>
+                <option value="frame" selected>녹화 틀 (지난 위치에서 시작)</option>
+              </select>
+            </label>
+
+            <label class="row">
+              <span class="name">녹화 시작</span>
+              <select id="record-control" disabled>
+                <option value="immediate">드래그를 마치면 바로</option>
+                <option value="button">드래그 뒤 틀로 다듬고 [● 시작]으로</option>
+              </select>
+              <small id="record-control-hint" class="hint">녹화 틀은 항상 [● 시작]으로 시작합니다.</small>
+            </label>
+
+            <div class="row" role="group" aria-labelledby="size-name">
+              <span id="size-name" class="name">크기</span>
+              <div class="ctl">
+                <select id="size-mode" aria-label="크기 정하는 방법">
+                  <option value="original">드래그한 영역 그대로</option>
+                  <option value="fit" selected>가로×세로 지정</option>
+                </select>
+                <div id="size-box" class="pair">
+                  <input id="size-width" type="number" min="1" max="4096" value="480" aria-label="가로 픽셀" />
+                  <span>×</span>
+                  <input id="size-height" type="number" min="1" max="4096" value="270" aria-label="세로 픽셀" />
+                </div>
+              </div>
+              <small class="hint">비율을 지켜 이 크기 안으로 줄이며(키우지 않음), 용량 목표로도 바뀌지 않습니다.</small>
+            </div>
+          </div>
+
+          <div class="col col-b">
+            <h2 class="caption">GIF</h2>
+            <label class="row">
+              <span class="name">화질 단계</span>
+              <select id="level">
+                <option value="" selected>자동 (용량 목표가 없으면 1단계)</option>
+              </select>
+            </label>
+
+            <div class="row" role="group" aria-labelledby="max-size-name">
+              <span id="max-size-name" class="name">용량 목표</span>
+              <div class="ctl">
+                <select id="max-size" aria-label="용량 목표">
+                  <option value="">없음</option>
+                  <option value="1">1MB 이하</option>
+                  <option value="2">2MB 이하</option>
+                  <option value="5">5MB 이하</option>
+                  <option value="8">8MB 이하</option>
+                  <option value="10">10MB 이하</option>
+                  <option value="custom" selected>직접 입력</option>
+                </select>
+                <div id="max-size-box" class="pair">
+                  <input id="max-size-custom" type="number" min="0.01" step="0.01" value="3" aria-label="용량 목표(MB)" />
+                  <span>MB 이하</span>
+                </div>
+              </div>
+              <small id="max-size-hint" class="hint">크기는 그대로 두고, 화질 단계를 낮춰서 맞춥니다.</small>
+            </div>
+
+            <label class="row">
+              <span class="name">디더링 강도</span>
+              <span class="range">
+                <input id="dither" type="range" min="0" max="1" step="0.05" value="1" />
+                <output id="dither-value">1</output>
+              </span>
+            </label>
+          </div>
+        </form>
+
+        <div class="col prefs">
+          <h2 class="caption">앱</h2>
+          <div class="row">
+            <label class="name" for="hotkey-input">녹화 단축키</label>
+            <div class="ctl">
+              <input id="hotkey-input" type="text" value="Win+Shift+G" readonly />
+              <button id="hotkey-default" type="button">기본값</button>
+            </div>
+          </div>
+          <label class="check">
+            <input id="autostart" type="checkbox" checked />
+            Windows를 시작할 때 트레이에서 실행
+          </label>
+        </div>
+      </section>
+    </main>
+
+    <!-- 시안 전용: ui/index.html로 옮길 때 이 details와 아래 script를 지운다 -->
+    <details class="demo">
+      <summary>시안 상태</summary>
+      <div class="demo-panel">
+        <div>
+          <button type="button" data-state="longest">가장 긴 상태</button>
+          <button type="button" data-state="empty">결과 없음</button>
+          <button type="button" data-state="recording">녹화 중</button>
+          <button type="button" data-state="plain">조건부 칸 숨김</button>
+        </div>
+        <div>
+          <button type="button" data-gif="wide">가로 GIF</button>
+          <button type="button" data-gif="tall">세로 GIF</button>
+          <button type="button" data-gif="worst">긴 안내문</button>
+        </div>
+        <div>
+          <button type="button" data-theme-pick="">시스템</button>
+          <button type="button" data-theme-pick="light">밝게</button>
+          <button type="button" data-theme-pick="dark">어둡게</button>
+        </div>
+      </div>
+    </details>
+
+    <script>
+      const $ = (selector) => document.querySelector(selector);
+      const preview = $("#preview");
+      const wide = preview.src;
+      const tall =
+        "data:image/svg+xml," +
+        encodeURIComponent(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='540' viewBox='0 0 300 540'>" +
+            "<defs><linearGradient id='t' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#1fb6a6'/><stop offset='1' stop-color='#2f5fd0'/></linearGradient></defs>" +
+            "<rect width='300' height='540' fill='url(#t)'/>" +
+            "<rect x='30' y='60' width='240' height='70' rx='12' fill='#fff' fill-opacity='.9'/>" +
+            "<rect x='30' y='150' width='240' height='70' rx='12' fill='#fff' fill-opacity='.75'/>" +
+            "<rect x='30' y='240' width='240' height='70' rx='12' fill='#fff' fill-opacity='.6'/>" +
+            "<circle cx='150' cy='440' r='34' fill='#fff' fill-opacity='.85'/></svg>",
+        );
+      const texts = {
+        status: "2,184,330바이트, 5821ms",
+        encoded: "용량 목표에 맞춤: 크기 637×421 → 408×270, 화질 3단계 (128색, 열화 2)",
+        worstEncoded:
+          "용량 목표보다 큽니다. 조정할 수 있는 끝까지 낮췄습니다: 크기 637×421 → 408×270, 화질 6단계 (16색, 열화 8). " +
+          "크기를 줄이거나 더 짧게 녹화하세요. 최대 길이 30초에 닿아 녹화를 끝냈습니다.",
+        hint: "크기는 그대로 두고, 화질 단계를 낮춰서 맞춥니다.",
+        worstHint: "화질 단계를 먼저 낮추고, 6단계로도 넘으면 크기를 원래의 25%까지 줄여서 맞춥니다.",
+      };
+
+      function conditional(on) {
+        $("#selection").value = on ? "frame" : "drag";
+        $("#record-control").disabled = on;
+        $("#record-control-hint").hidden = !on;
+        $("#size-mode").value = on ? "fit" : "original";
+        $("#size-box").hidden = !on;
+        $("#max-size").value = on ? "custom" : "";
+        $("#max-size-box").hidden = !on;
+        $("#max-size-hint").textContent = on ? texts.hint : texts.worstHint;
+      }
+
+      function result(on) {
+        preview.hidden = !on;
+        $("#encoded").hidden = !on;
+        $("#saved").hidden = !on;
+        $("#status").textContent = on ? texts.status : "단축키나 [녹화 시작]으로 녹화하세요.";
+      }
+
+      const states = {
+        longest() {
+          conditional(true);
+          result(true);
+          recording(false);
+        },
+        empty() {
+          result(false);
+          recording(false);
+        },
+        recording() {
+          result(true);
+          recording(true);
+          $("#encoded").hidden = true;
+          $("#status").textContent =
+            "637×421 영역을 408×270 크기로 녹화하는 중… 남은 시간 24초. Enter나 [끝]으로 마치고, Esc나 [✕]로 취소합니다.";
+        },
+        plain() {
+          conditional(false);
+        },
+      };
+
+      function recording(now) {
+        $("#record").textContent = now ? "끝" : "녹화 시작";
+        $("#cancel").hidden = !now;
+      }
+
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest(".demo button");
+        if (!button) return;
+        const { state, gif, themePick } = button.dataset;
+        if (state) states[state]();
+        if (gif === "wide" || gif === "tall") {
+          result(true);
+          preview.src = gif === "wide" ? wide : tall;
+        }
+        if (gif === "worst") {
+          result(true);
+          $("#encoded").textContent = texts.worstEncoded;
+          $("#max-size-hint").textContent = texts.worstHint;
+        } else if (gif) {
+          $("#encoded").textContent = texts.encoded;
+        }
+        if (themePick !== undefined) {
+          if (themePick) document.documentElement.dataset.theme = themePick;
+          else delete document.documentElement.dataset.theme;
+        }
+      });
+
+      $("#dither").addEventListener("input", (event) => ($("#dither-value").textContent = event.target.value));
+    </script>
+  </body>
+</html>
