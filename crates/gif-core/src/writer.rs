@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::diff::{FramePatch, changed_patch};
 use crate::GifFps;
@@ -42,6 +41,7 @@ pub struct GifWriter {
     min_code_size: u8,
     frames_written: usize,
     last_frame: Vec<u8>,
+    longer_runs: LongerRuns,
 }
 
 impl GifWriter {
@@ -68,6 +68,7 @@ impl GifWriter {
             min_code_size: table_bits.max(2),
             frames_written: 0,
             last_frame: Vec::new(),
+            longer_runs: LongerRuns::new(),
         })
     }
 
@@ -84,7 +85,7 @@ impl GifWriter {
         write_frame_control(&mut self.out, slots_delay(self.fps, slots), transparent);
         write_image_position(&mut self.out, &patch);
         self.out.push(self.min_code_size);
-        write_sub_blocks(&mut self.out, &lzw(&patch.pixels, self.min_code_size));
+        write_sub_blocks(&mut self.out, &lzw(&patch.pixels, self.min_code_size, &mut self.longer_runs));
 
         self.last_frame.clear();
         self.last_frame.extend_from_slice(indices);
@@ -206,13 +207,50 @@ fn write_sub_blocks(out: &mut Vec<u8>, data: &[u8]) {
 const MAX_CODE_BITS: u8 = 12;
 const CODE_TABLE_FULL: u16 = 1 << MAX_CODE_BITS;
 
-fn lzw(pixels: &[u8], min_code_size: u8) -> Vec<u8> {
+#[derive(Debug, Clone)]
+struct LongerRuns {
+    codes: Vec<u16>,
+    filled: Vec<usize>,
+}
+
+impl LongerRuns {
+    const NONE: u16 = 0;
+
+    fn new() -> Self {
+        let every_run_and_pixel = usize::from(CODE_TABLE_FULL) << 8;
+        Self { codes: vec![Self::NONE; every_run_and_pixel], filled: Vec::with_capacity(usize::from(CODE_TABLE_FULL)) }
+    }
+
+    fn slot(run: u16, pixel: u8) -> usize {
+        usize::from(run) << 8 | usize::from(pixel)
+    }
+
+    fn get(&self, run: u16, pixel: u8) -> Option<u16> {
+        let code = self.codes[Self::slot(run, pixel)];
+        (code != Self::NONE).then_some(code)
+    }
+
+    fn insert(&mut self, run: u16, pixel: u8, code: u16) {
+        let slot = Self::slot(run, pixel);
+        self.codes[slot] = code;
+        self.filled.push(slot);
+    }
+
+    fn clear(&mut self) {
+        for &slot in &self.filled {
+            self.codes[slot] = Self::NONE;
+        }
+        self.filled.clear();
+    }
+}
+
+fn lzw(pixels: &[u8], min_code_size: u8, longer_runs: &mut LongerRuns) -> Vec<u8> {
     let clear = 1u16 << min_code_size;
     let end = clear + 1;
     let first_free_code = clear + 2;
     let starting_code_bits = min_code_size + 1;
 
-    let mut longer_runs: HashMap<(u16, u8), u16> = HashMap::new();
+    longer_runs.clear();
     let mut next_code = first_free_code;
     let mut code_bits = starting_code_bits;
     let mut bits = BitWriter::default();
@@ -220,7 +258,7 @@ fn lzw(pixels: &[u8], min_code_size: u8) -> Vec<u8> {
 
     let mut run = u16::from(pixels[0]);
     for &pixel in &pixels[1..] {
-        if let Some(&longer) = longer_runs.get(&(run, pixel)) {
+        if let Some(longer) = longer_runs.get(run, pixel) {
             run = longer;
             continue;
         }
@@ -232,7 +270,7 @@ fn lzw(pixels: &[u8], min_code_size: u8) -> Vec<u8> {
             next_code = first_free_code;
             code_bits = starting_code_bits;
         } else {
-            longer_runs.insert((run, pixel), next_code);
+            longer_runs.insert(run, pixel, next_code);
             if next_code == 1 << code_bits {
                 code_bits += 1;
             }
