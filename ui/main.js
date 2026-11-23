@@ -16,7 +16,6 @@ const maxSize = document.querySelector("#max-size");
 const maxSizeBox = document.querySelector("#max-size-box");
 const maxSizeCustom = document.querySelector("#max-size-custom");
 const maxSizeHint = document.querySelector("#max-size-hint");
-const make = document.querySelector("#make");
 const record = document.querySelector("#record");
 const cancel = document.querySelector("#cancel");
 const status = document.querySelector("#status");
@@ -128,34 +127,7 @@ function showRecording(now) {
   clearInterval(countdown);
   record.textContent = now ? "끝" : "녹화 시작";
   cancel.hidden = !now;
-  make.disabled = now;
 }
-
-async function showGif(command, args, busyText) {
-  make.disabled = true;
-  encoded.hidden = true;
-  status.textContent = busyText;
-  const started = performance.now();
-
-  try {
-    const bytes = await invoke(command, args);
-    const gif = new Blob([bytes], { type: "image/gif" });
-    URL.revokeObjectURL(preview.src);
-    preview.src = URL.createObjectURL(gif);
-    preview.hidden = false;
-    const elapsed = Math.round(performance.now() - started);
-    status.textContent = `${gif.size.toLocaleString()}바이트, ${elapsed}ms`;
-  } catch (error) {
-    status.textContent = `실패: ${error}`;
-  } finally {
-    make.disabled = false;
-  }
-}
-
-form.addEventListener("submit", (event) => {
-  event.preventDefault();
-  showGif("make_sample_gif", { fps: Number(fps.value), quality: quality() }, "만드는 중…");
-});
 
 record.addEventListener("click", () => {
   if (recording) {
@@ -176,7 +148,6 @@ const ADJUST_THE_FRAME =
 listen("selection-started", ({ payload: how }) => {
   recordingBegan = performance.now();
   record.disabled = true;
-  make.disabled = true;
   encoded.hidden = true;
   status.textContent = {
     drag: "녹화할 영역을 드래그하세요. Esc나 오른쪽 클릭으로 취소합니다.",
