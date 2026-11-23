@@ -207,15 +207,50 @@ fn widest_box_that_can_split(boxes: &[ColorBox]) -> Option<usize> {
 }
 
 fn split_at_median(colors: &mut [CountedColor], channel: usize, pixels: u64) -> usize {
-    colors.sort_unstable_by_key(|&(color, _)| (color[channel], color));
-
     let half = pixels.div_ceil(2);
-    let mut seen = 0;
-    let reaches_half = colors.iter().position(|&(_, count)| {
+    let mut per_value = [0u64; 256];
+    for &(color, count) in colors.iter() {
+        per_value[usize::from(color[channel])] += u64::from(count);
+    }
+    let mut below = 0;
+    let mut median = u8::MAX;
+    for value in 0..=u8::MAX {
+        if below + per_value[usize::from(value)] >= half {
+            median = value;
+            break;
+        }
+        below += per_value[usize::from(value)];
+    }
+
+    let (lower_end, upper_start) = partition_around(colors, channel, median);
+    let at_median = &mut colors[lower_end..upper_start];
+    at_median.sort_unstable_by_key(|&(color, _)| color);
+    let mut seen = below;
+    let reaches_half = at_median.iter().position(|&(_, count)| {
         seen += u64::from(count);
         seen >= half
     });
-    reaches_half.map_or(1, |position| position + 1).clamp(1, colors.len() - 1)
+    let position = lower_end + reaches_half.expect("the median value holds the pixel that reaches half");
+    (position + 1).clamp(1, colors.len() - 1)
+}
+
+fn partition_around(colors: &mut [CountedColor], channel: usize, median: u8) -> (usize, usize) {
+    let (mut lower_end, mut next, mut upper_start) = (0, 0, colors.len());
+    while next < upper_start {
+        match colors[next].0[channel].cmp(&median) {
+            std::cmp::Ordering::Less => {
+                colors.swap(lower_end, next);
+                lower_end += 1;
+                next += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                upper_start -= 1;
+                colors.swap(next, upper_start);
+            }
+            std::cmp::Ordering::Equal => next += 1,
+        }
+    }
+    (lower_end, upper_start)
 }
 
 fn average(colors: &[CountedColor]) -> Rgb {
@@ -309,6 +344,51 @@ mod tests {
         assert_ne!(black, white);
 
         assert_eq!(palette.to_indices(&[gray(10), gray(200), [120, 130, 140]]), [black, white, white]);
+    }
+
+    fn median_cut_by_sorting(frames: &[&[Rgb]], max_colors: usize) -> Vec<Rgb> {
+        let mut counts = ColorCounts::new();
+        for frame in frames {
+            counts.add(frame);
+        }
+        let mut boxes = vec![counts.in_color_order()];
+        while boxes.len() < max_colors {
+            let splittable = (0..boxes.len()).rev().filter(|&index| boxes[index].len() > 1);
+            let Some(widest) = splittable.max_by_key(|&index| (widest_channel(&boxes[index]).0, pixel_count(&boxes[index])))
+            else {
+                break;
+            };
+            let mut colors = boxes.swap_remove(widest);
+            let (_, channel) = widest_channel(&colors);
+            colors.sort_by_key(|&(color, _)| (color[channel], color));
+            let half = pixel_count(&colors).div_ceil(2);
+            let mut seen = 0;
+            let reaches_half = colors.iter().position(|&(_, count)| {
+                seen += u64::from(count);
+                seen >= half
+            });
+            let cut = reaches_half.map_or(1, |position| position + 1).clamp(1, colors.len() - 1);
+            let upper = colors.split_off(cut);
+            boxes.push(colors);
+            boxes.push(upper);
+        }
+        boxes.iter().map(|colors| average(colors)).collect()
+    }
+
+    #[test]
+    fn the_palette_is_the_one_sorting_every_box_would_choose() {
+        let gradient: Vec<Rgb> = (0..=255u8).flat_map(|red| (0..=255u8).step_by(3).map(move |green| [red, green, 7])).collect();
+        let mostly_one_value: Vec<Rgb> =
+            (0..20_000u32).map(|n| if n % 5 == 0 { [(n % 256) as u8, (n / 256) as u8, 3] } else { [90, (n % 7) as u8, (n % 11) as u8] }).collect();
+        let few_heavy: Vec<Rgb> = (0..9000u32).map(|n| [[10, 200, 30], [10, 40, 30], [250, 40, 30], [10, 200, 31]][(n % 4) as usize]).collect();
+        let cases: [(&str, Vec<Rgb>); 4] =
+            [("many", many_colors()), ("gradient", gradient), ("mostly one value", mostly_one_value), ("few heavy", few_heavy)];
+        for (name, pixels) in &cases {
+            for max_colors in [2, 3, 16, 64, Palette::MAX_COLORS] {
+                let chosen = Palette::from_frames(&[pixels], max_colors).unwrap();
+                assert_eq!(chosen.colors(), median_cut_by_sorting(&[pixels], max_colors), "{name}, {max_colors} colors");
+            }
+        }
     }
 
     fn many_colors() -> Vec<Rgb> {
