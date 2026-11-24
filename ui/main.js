@@ -44,8 +44,8 @@ function whyItEnded() {
 }
 
 function describeLevel(number) {
-  const [colors, tolerance] = levels[number - 1];
-  return `${number}단계 (${colors}색, 열화 ${tolerance})`;
+  const [colors, tolerance, loss] = levels[number - 1];
+  return `${number}단계 (${colors}색, 열화 ${tolerance}, 손실 ${loss})`;
 }
 
 function sizeIsFixed() {

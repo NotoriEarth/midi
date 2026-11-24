@@ -45,7 +45,8 @@ fn main() {
 
     if motion.ends_with("-whole") {
         let level = LEVELS[0];
-        let settings = ManualSettings { colors: level.colors, dither: 1.0, tolerance: level.tolerance };
+        let settings =
+            ManualSettings { colors: level.colors, dither: 1.0, tolerance: level.tolerance, loss: level.loss };
         let (gif, whole) = timed(|| encode_gif(width as u16, height as u16, &frames, fps, settings).expect("a GIF"));
         println!("  level 1 in one call: {:.2}s, {} bytes", whole.as_secs_f64(), gif.len());
         return;

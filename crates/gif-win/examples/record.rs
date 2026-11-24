@@ -26,7 +26,7 @@ fn main() {
 
     let borrowed: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
     let encode = |tolerance| {
-        let settings = ManualSettings { colors: ManualSettings::MAX_COLORS, dither: 1.0, tolerance };
+        let settings = ManualSettings { colors: ManualSettings::MAX_COLORS, dither: 1.0, tolerance, loss: 0 };
         encode_gif(WIDTH as u16, HEIGHT as u16, &borrowed, FPS, settings).expect("every frame is WIDTH x HEIGHT")
     };
     let bytes = encode(0);

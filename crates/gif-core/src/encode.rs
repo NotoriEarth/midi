@@ -12,6 +12,7 @@ pub struct ManualSettings {
     pub colors: usize,
     pub dither: f32,
     pub tolerance: u8,
+    pub loss: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -22,6 +23,7 @@ pub enum EncodeError {
     Colors(usize),
     Dither(f32),
     Tolerance(u8),
+    Loss(u8),
     SizeLimit(usize),
     Level(usize),
     FrameUnreadable { frame: usize },
@@ -59,6 +61,7 @@ impl ManualSettings {
     pub const MIN_COLORS: usize = 2;
     pub const MAX_COLORS: usize = Palette::MAX_COLORS;
     pub const MAX_TOLERANCE: u8 = 32;
+    pub const MAX_LOSS: u8 = 64;
 
     pub fn check(self) -> Result<(), EncodeError> {
         if !(Self::MIN_COLORS..=Self::MAX_COLORS).contains(&self.colors) {
@@ -69,6 +72,9 @@ impl ManualSettings {
         }
         if self.tolerance > Self::MAX_TOLERANCE {
             return Err(EncodeError::Tolerance(self.tolerance));
+        }
+        if self.loss > Self::MAX_LOSS {
+            return Err(EncodeError::Loss(self.loss));
         }
         Ok(())
     }
@@ -138,7 +144,7 @@ pub fn encode_frames(
     drop(counts);
 
     let mut steady = Stabilizer::new(settings.tolerance);
-    let mut writer = GifWriter::new(width, height, scenes[0].palette.colors(), fps)
+    let mut writer = GifWriter::new(width, height, scenes[0].palette.colors(), fps, settings.loss)
         .expect("the size is not empty and the palette has 1 to 255 colors");
     for scene in &scenes {
         writer.use_palette(scene.palette.colors()).expect("the palette has 1 to 255 colors");
@@ -184,7 +190,7 @@ mod tests {
     use super::*;
     use crate::writer::write_gif;
 
-    const SHARP: ManualSettings = ManualSettings { colors: 255, dither: 0.0, tolerance: 0 };
+    const SHARP: ManualSettings = ManualSettings { colors: 255, dither: 0.0, tolerance: 0, loss: 0 };
 
     fn five_small_frames() -> Vec<Vec<Rgb>> {
         (0..5u8).map(|number| (0..8 * 6).map(|index| [index as u8 * 5, number * 40, 90]).collect()).collect()
@@ -234,7 +240,7 @@ mod tests {
     fn frames_that_exist_one_at_a_time_give_the_same_file_as_frames_held_together() {
         let frames = five_small_frames();
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        let lossy = ManualSettings { colors: 16, dither: 1.0, tolerance: 8 };
+        let lossy = ManualSettings { colors: 16, dither: 1.0, tolerance: 8, loss: 8 };
         let mut on_demand = MadeOnDemand { frame_count: 5, slots: None, unreadable: None, reads: Vec::new() };
 
         let streamed = encode_frames(8, 6, &mut on_demand, GifFps::Fps10, lossy, &mut |_| {});
@@ -353,7 +359,7 @@ mod tests {
     fn a_clip_without_a_cut_is_written_with_one_palette_for_every_frame() {
         let frames: Vec<Vec<Rgb>> = (0..16).map(|number| ramp(48, 32, number * 8)).collect();
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        let settings = ManualSettings { colors: 64, dither: 1.0, tolerance: 0 };
+        let settings = ManualSettings { colors: 64, dither: 1.0, tolerance: 0, loss: 0 };
 
         let palette = Palette::from_frames(&slices, 64).unwrap();
         let indexed: Vec<Vec<u8>> =
@@ -387,7 +393,7 @@ mod tests {
     #[test]
     fn the_picture_never_uses_more_colors_than_asked() {
         let frame = ramp(64, 48, 0);
-        let settings = ManualSettings { colors: 16, dither: 1.0, tolerance: 0 };
+        let settings = ManualSettings { colors: 16, dither: 1.0, tolerance: 0, loss: 0 };
         let bytes = encode_gif(64, 48, &[&frame], GifFps::Fps10, settings).unwrap();
 
         let mut used = shown_frames(&bytes)[0].1.clone();
@@ -400,7 +406,7 @@ mod tests {
     fn it_gives_the_same_file_as_running_each_step_by_hand() {
         let frames = [ramp(48, 32, 0), ramp(48, 32, 40)];
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        let settings = ManualSettings { colors: 64, dither: 0.5, tolerance: 0 };
+        let settings = ManualSettings { colors: 64, dither: 0.5, tolerance: 0, loss: 0 };
 
         let palette = Palette::from_frames(&slices, 64).unwrap();
         let indexed: Vec<Vec<u8>> =
@@ -448,9 +454,18 @@ mod tests {
     }
 
     #[test]
+    fn a_loss_above_the_limit_is_rejected() {
+        let frame = [[0, 0, 0]];
+        let settings = ManualSettings { loss: 65, ..SHARP };
+        assert_eq!(encode_gif(1, 1, &[&frame], GifFps::Fps10, settings), Err(EncodeError::Loss(65)));
+        assert!(encode_gif(1, 1, &[&frame], GifFps::Fps10, ManualSettings { loss: 64, ..SHARP }).is_ok());
+    }
+
+    #[test]
     fn settings_outside_their_range_are_rejected() {
         let frame = [[0, 0, 0]];
-        let encode = |colors, dither| encode_gif(1, 1, &[&frame], GifFps::Fps10, ManualSettings { colors, dither, tolerance: 0 });
+        let encode =
+            |colors, dither| encode_gif(1, 1, &[&frame], GifFps::Fps10, ManualSettings { colors, dither, ..SHARP });
 
         assert_eq!(encode(1, 0.0), Err(EncodeError::Colors(1)));
         assert_eq!(encode(256, 0.0), Err(EncodeError::Colors(256)));
