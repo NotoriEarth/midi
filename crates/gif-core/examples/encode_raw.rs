@@ -14,7 +14,7 @@ fn main() {
     let dither: f32 = rest.first().map_or(1.0, |dither| dither.parse().unwrap());
 
     let bytes = std::fs::read(input).unwrap();
-    let pixels: Vec<Rgb> = bytes.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
+    let pixels: Vec<Rgb> = bytes.as_chunks::<3>().0.to_vec();
     let frames: Vec<&[Rgb]> = pixels.chunks_exact(usize::from(width) * usize::from(height)).collect();
 
     let started = Instant::now();

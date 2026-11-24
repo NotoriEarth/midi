@@ -373,15 +373,15 @@ fn lzw(pixels: &mut [u8], min_code_size: u8, longer_runs: &mut LongerRuns, stand
     bits.push(clear, code_bits);
 
     let mut run = u16::from(pixels[0]);
-    for position in 1..pixels.len() {
-        let pixel = pixels[position];
+    for (position, shown) in pixels.iter_mut().enumerate().skip(1) {
+        let pixel = *shown;
         if let Some(longer) = longer_runs.get(run, pixel) {
             run = longer;
             continue;
         }
         let nearest = stand_ins.and_then(|stand_ins| longer_runs.nearest(run, position, stand_ins));
         if let Some((longer, stand_in)) = nearest {
-            pixels[position] = stand_in;
+            *shown = stand_in;
             run = longer;
             continue;
         }
