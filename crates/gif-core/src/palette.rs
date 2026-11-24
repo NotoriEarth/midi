@@ -202,6 +202,10 @@ impl ColorCounts {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.0.fill(0);
+    }
+
     fn in_color_order(&self) -> Vec<CountedColor> {
         let mut colors = Vec::with_capacity(self.0.iter().filter(|&&count| count > 0).count());
         let seen = self.0.iter().enumerate().filter(|&(_, &count)| count > 0);

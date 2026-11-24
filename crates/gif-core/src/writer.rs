@@ -37,8 +37,8 @@ pub struct GifWriter {
     fps: GifFps,
     row_width: usize,
     pixel_count: usize,
-    palette_len: usize,
-    min_code_size: u8,
+    global_palette: Vec<Rgb>,
+    local_palette: Option<Vec<Rgb>>,
     frames_written: usize,
     last_frame: Vec<u8>,
     longer_runs: LongerRuns,
@@ -50,9 +50,7 @@ impl GifWriter {
         if pixel_count == 0 {
             return Err(GifWriteError::EmptyImage);
         }
-        if palette.is_empty() || palette.len() > MAX_PALETTE_COLORS {
-            return Err(GifWriteError::PaletteSize(palette.len()));
-        }
+        check_palette(palette)?;
 
         let table_bits = color_table_bits(palette.len() + 1);
         let mut out = Vec::new();
@@ -64,28 +62,49 @@ impl GifWriter {
             fps,
             row_width: usize::from(width),
             pixel_count,
-            palette_len: palette.len(),
-            min_code_size: table_bits.max(2),
+            global_palette: palette.to_vec(),
+            local_palette: None,
             frames_written: 0,
             last_frame: Vec::new(),
             longer_runs: LongerRuns::new(),
         })
     }
 
+    pub fn use_palette(&mut self, palette: &[Rgb]) -> Result<(), GifWriteError> {
+        check_palette(palette)?;
+        if palette == self.palette() {
+            return Ok(());
+        }
+        self.local_palette = (palette != self.global_palette).then(|| palette.to_vec());
+        self.last_frame.clear();
+        Ok(())
+    }
+
+    fn palette(&self) -> &[Rgb] {
+        self.local_palette.as_deref().unwrap_or(&self.global_palette)
+    }
+
     pub fn add_frame(&mut self, indices: &[u8], slots: std::ops::Range<usize>) -> Result<(), GifWriteError> {
         let frame = self.frames_written;
-        check_frame(frame, indices, self.pixel_count, self.palette_len)?;
+        let palette_len = self.palette().len();
+        check_frame(frame, indices, self.pixel_count, palette_len)?;
 
-        let transparent = self.palette_len as u8;
-        let patch = if frame == 0 {
+        let transparent = palette_len as u8;
+        let table_bits = color_table_bits(palette_len + 1);
+        let min_code_size = table_bits.max(2);
+        let patch = if self.last_frame.is_empty() {
             FramePatch::whole_frame(indices, self.row_width)
         } else {
             changed_patch(&self.last_frame, indices, self.row_width, transparent)
         };
         write_frame_control(&mut self.out, slots_delay(self.fps, slots), transparent);
-        write_image_position(&mut self.out, &patch);
-        self.out.push(self.min_code_size);
-        write_sub_blocks(&mut self.out, &lzw(&patch.pixels, self.min_code_size, &mut self.longer_runs));
+        let local_table_bits = self.local_palette.is_some().then_some(table_bits);
+        write_image_position(&mut self.out, &patch, local_table_bits);
+        if let Some(local_palette) = &self.local_palette {
+            write_color_table(&mut self.out, local_palette, table_bits);
+        }
+        self.out.push(min_code_size);
+        write_sub_blocks(&mut self.out, &lzw(&patch.pixels, min_code_size, &mut self.longer_runs));
 
         self.last_frame.clear();
         self.last_frame.extend_from_slice(indices);
@@ -117,11 +136,16 @@ fn check_input(pixel_count: usize, palette: &[Rgb], frames: &[&[u8]]) -> Result<
     if frames.is_empty() {
         return Err(GifWriteError::NoFrames);
     }
-    if palette.is_empty() || palette.len() > MAX_PALETTE_COLORS {
-        return Err(GifWriteError::PaletteSize(palette.len()));
-    }
+    check_palette(palette)?;
     for (frame, pixels) in frames.iter().enumerate() {
         check_frame(frame, pixels, pixel_count, palette.len())?;
+    }
+    Ok(())
+}
+
+fn check_palette(palette: &[Rgb]) -> Result<(), GifWriteError> {
+    if palette.is_empty() || palette.len() > MAX_PALETTE_COLORS {
+        return Err(GifWriteError::PaletteSize(palette.len()));
     }
     Ok(())
 }
@@ -187,13 +211,13 @@ fn write_frame_control(out: &mut Vec<u8>, delay: u16, transparent: u8) {
     out.extend_from_slice(&[transparent, BLOCK_END]);
 }
 
-fn write_image_position(out: &mut Vec<u8>, patch: &FramePatch) {
-    let no_local_table = 0;
+fn write_image_position(out: &mut Vec<u8>, patch: &FramePatch, local_table_bits: Option<u8>) {
+    let has_local_table = 0b1000_0000;
     out.push(IMAGE);
     for value in [patch.left, patch.top, patch.width, patch.height] {
         out.extend_from_slice(&(value as u16).to_le_bytes());
     }
-    out.push(no_local_table);
+    out.push(local_table_bits.map_or(0, |bits| has_local_table | (bits - 1)));
 }
 
 fn write_sub_blocks(out: &mut Vec<u8>, data: &[u8]) {
@@ -467,6 +491,70 @@ mod tests {
         let bytes = write_gif(2, 2, &[BLACK, RED], &[&frame[..]; 4], GifFps::Fps15).unwrap();
         let shown = vec![(6, frame.to_vec()), (7, frame.to_vec()), (7, frame.to_vec()), (6, frame.to_vec())];
         assert_eq!(decode(&bytes).frames, shown);
+    }
+
+    fn decoded_colors(bytes: &[u8]) -> Vec<(Vec<Rgb>, bool)> {
+        let mut options = gif::DecodeOptions::new();
+        options.set_color_output(gif::ColorOutput::Indexed);
+        let mut decoder = options.read_info(bytes).expect("a readable GIF header");
+        let global = decoder.global_palette().expect("a global palette").to_vec();
+        let width = usize::from(decoder.width());
+        let mut canvas = vec![BLACK; width * usize::from(decoder.height())];
+        let mut frames = Vec::new();
+        while let Some(frame) = decoder.read_next_frame().expect("a readable frame") {
+            let table = frame.palette.as_deref().unwrap_or(&global);
+            let (left, top) = (usize::from(frame.left), usize::from(frame.top));
+            let patch_width = usize::from(frame.width);
+            for (position, &index) in frame.buffer.iter().enumerate() {
+                if Some(index) != frame.transparent {
+                    let (x, y) = (left + position % patch_width, top + position / patch_width);
+                    let color = &table[usize::from(index) * 3..][..3];
+                    canvas[y * width + x] = [color[0], color[1], color[2]];
+                }
+            }
+            frames.push((canvas.clone(), frame.palette.is_some()));
+        }
+        frames
+    }
+
+    fn gif_with_palettes(scenes: &[(&[Rgb], &[&[u8]])]) -> Vec<u8> {
+        let mut writer = GifWriter::new(3, 1, scenes[0].0, GifFps::Fps10).unwrap();
+        for (palette, frames) in scenes {
+            writer.use_palette(palette).unwrap();
+            for frame in *frames {
+                writer.add_frame(frame, 0..1).unwrap();
+            }
+        }
+        writer.finish().unwrap()
+    }
+
+    #[test]
+    fn frames_after_a_palette_switch_show_the_colors_of_the_new_palette() {
+        let blue = [0, 0, 255];
+        let first: &[Rgb] = &[BLACK, RED];
+        let second: &[Rgb] = &[GREEN, blue, RED];
+        let bytes = gif_with_palettes(&[
+            (first, &[&[0, 1, 0], &[0, 1, 1]]),
+            (second, &[&[0, 1, 2], &[0, 0, 2]]),
+            (first, &[&[1, 1, 0]]),
+        ]);
+
+        let shown_and_whether_it_carries_its_own_table = vec![
+            (vec![BLACK, RED, BLACK], false),
+            (vec![BLACK, RED, RED], false),
+            (vec![GREEN, blue, RED], true),
+            (vec![GREEN, GREEN, RED], true),
+            (vec![RED, RED, BLACK], false),
+        ];
+        assert_eq!(decoded_colors(&bytes), shown_and_whether_it_carries_its_own_table);
+    }
+
+    #[test]
+    fn switching_to_the_palette_already_in_use_changes_nothing() {
+        let palette: &[Rgb] = &[BLACK, RED];
+        let frames: &[&[u8]] = &[&[0, 1, 0], &[0, 1, 1], &[1, 1, 1]];
+        let switched = gif_with_palettes(&[(palette, &frames[..1]), (palette, &frames[1..])]);
+        assert_eq!(switched, write_gif(3, 1, palette, frames, GifFps::Fps10).unwrap());
     }
 
     #[test]

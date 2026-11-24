@@ -1,6 +1,9 @@
+use std::ops::Range;
+
 use crate::GifFps;
 use crate::dither::ordered_dither;
 use crate::palette::{ColorCounts, Palette};
+use crate::scene::SceneCuts;
 use crate::stabilize::Stabilizer;
 use crate::writer::{GifWriter, Rgb};
 
@@ -112,33 +115,52 @@ pub fn encode_frames(
     };
     let mut frame = Vec::new();
 
+    let palette_of = |counts: &ColorCounts| {
+        Palette::from_counts(counts, settings.colors).expect("the color limit is in range and the scene has pixels")
+    };
+    let mut scenes = Vec::new();
+    let mut first_frame = 0;
     let mut counts = ColorCounts::new();
+    let mut cuts = SceneCuts::new(usize::from(width));
     let mut steady = Stabilizer::new(settings.tolerance);
     for index in 0..frame_count {
         read(frames, index, pixel_count, &mut frame)?;
-        counts.add(steady.show(&frame));
+        let shown = steady.show(&frame);
+        if cuts.starts_new_scene(shown) {
+            scenes.push(Scene { frames: first_frame..index, palette: palette_of(&counts) });
+            counts.clear();
+            first_frame = index;
+        }
+        counts.add(shown);
         one_more_step();
     }
-    let palette = Palette::from_counts(&counts, settings.colors)
-        .expect("the color limit is in range and the frames have pixels");
+    scenes.push(Scene { frames: first_frame..frame_count, palette: palette_of(&counts) });
     drop(counts);
 
     let mut steady = Stabilizer::new(settings.tolerance);
-    let mut nearest = palette.lookup();
-    let mut writer = GifWriter::new(width, height, palette.colors(), fps)
+    let mut writer = GifWriter::new(width, height, scenes[0].palette.colors(), fps)
         .expect("the size is not empty and the palette has 1 to 255 colors");
-    for index in 0..frame_count {
-        read(frames, index, pixel_count, &mut frame)?;
-        let indices = ordered_dither(&mut nearest, steady.show(&frame), usize::from(width), settings.dither)
-            .expect("every frame is width x height pixels");
-        let slot = frames.slot(index);
-        let next_slot = if index + 1 < frame_count { frames.slot(index + 1) } else { slot + 1 };
-        writer
-            .add_frame(&indices, slot..next_slot.max(slot + 1))
-            .expect("the indices come from the palette and the frame fits the size");
-        one_more_step();
+    for scene in &scenes {
+        writer.use_palette(scene.palette.colors()).expect("the palette has 1 to 255 colors");
+        let mut nearest = scene.palette.lookup();
+        for index in scene.frames.clone() {
+            read(frames, index, pixel_count, &mut frame)?;
+            let indices = ordered_dither(&mut nearest, steady.show(&frame), usize::from(width), settings.dither)
+                .expect("every frame is width x height pixels");
+            let slot = frames.slot(index);
+            let next_slot = if index + 1 < frame_count { frames.slot(index + 1) } else { slot + 1 };
+            writer
+                .add_frame(&indices, slot..next_slot.max(slot + 1))
+                .expect("the indices come from the palette and the frame fits the size");
+            one_more_step();
+        }
     }
     Ok(writer.finish().expect("at least one frame was written"))
+}
+
+struct Scene {
+    frames: Range<usize>,
+    palette: Palette,
 }
 
 fn read(
@@ -264,21 +286,18 @@ mod tests {
         assert_eq!((refused, reported), (Err(EncodeError::NoFrames), vec![]));
     }
 
-    fn shown_frames(bytes: &[u8]) -> Vec<(u16, Vec<Rgb>)> {
+    fn decoded_frames(bytes: &[u8]) -> Vec<(u16, Vec<Rgb>, Vec<Rgb>)> {
         let mut options = gif::DecodeOptions::new();
         options.set_color_output(gif::ColorOutput::Indexed);
         let mut decoder = options.read_info(bytes).expect("a readable GIF header");
-        let palette: Vec<Rgb> = decoder
-            .global_palette()
-            .expect("a global palette")
-            .chunks(3)
-            .map(|color| [color[0], color[1], color[2]])
-            .collect();
+        let colors_of = |table: &[u8]| -> Vec<Rgb> { table.chunks(3).map(|color| [color[0], color[1], color[2]]).collect() };
+        let global = colors_of(decoder.global_palette().expect("a global palette"));
         let (width, height) = (usize::from(decoder.width()), usize::from(decoder.height()));
 
         let mut canvas = vec![[0, 0, 0]; width * height];
         let mut frames = Vec::new();
         while let Some(frame) = decoder.read_next_frame().expect("a readable frame") {
+            let palette = frame.palette.as_deref().map_or_else(|| global.clone(), colors_of);
             let (left, top) = (usize::from(frame.left), usize::from(frame.top));
             let patch_width = usize::from(frame.width);
             for (position, &index) in frame.buffer.iter().enumerate() {
@@ -287,9 +306,62 @@ mod tests {
                     canvas[y * width + x] = palette[usize::from(index)];
                 }
             }
-            frames.push((frame.delay, canvas.clone()));
+            frames.push((frame.delay, canvas.clone(), palette));
         }
         frames
+    }
+
+    fn shown_frames(bytes: &[u8]) -> Vec<(u16, Vec<Rgb>)> {
+        decoded_frames(bytes).into_iter().map(|(delay, picture, _)| (delay, picture)).collect()
+    }
+
+    fn frames_where_the_palette_changes(bytes: &[u8]) -> Vec<usize> {
+        let palettes: Vec<Vec<Rgb>> = decoded_frames(bytes).into_iter().map(|(_, _, palette)| palette).collect();
+        (1..palettes.len()).filter(|&frame| palettes[frame] != palettes[frame - 1]).collect()
+    }
+
+    fn scene_of_many_colors(frames: usize, color_of: impl Fn(u8) -> Rgb) -> Vec<Vec<Rgb>> {
+        let still: Vec<Rgb> = (0..200).map(|pixel| color_of(pixel as u8)).collect();
+        (0..frames)
+            .map(|number| {
+                let mut frame = still.clone();
+                frame.swap(0, number);
+                frame
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_scene_gets_its_own_palette_so_two_scenes_of_200_colors_each_come_back_exactly() {
+        let dark_reds = scene_of_many_colors(10, |value| [value, 0, 40]);
+        let bright_blues = scene_of_many_colors(10, |value| [0, 255, value]);
+        let clip: Vec<&[Rgb]> = dark_reds.iter().chain(&bright_blues).map(Vec::as_slice).collect();
+        let mut every_color: Vec<Rgb> = clip.iter().flat_map(|frame| frame.iter().copied()).collect();
+        every_color.sort();
+        every_color.dedup();
+        assert!(every_color.len() > Palette::MAX_COLORS, "{} colors", every_color.len());
+
+        let bytes = encode_gif(20, 10, &clip, GifFps::Fps10, SHARP).unwrap();
+
+        assert_eq!(frames_where_the_palette_changes(&bytes), [10]);
+        let shown: Vec<Vec<Rgb>> = shown_frames(&bytes).into_iter().map(|(_, picture)| picture).collect();
+        let expected: Vec<Vec<Rgb>> = clip.iter().map(|frame| frame.to_vec()).collect();
+        assert_eq!(shown, expected);
+    }
+
+    #[test]
+    fn a_clip_without_a_cut_is_written_with_one_palette_for_every_frame() {
+        let frames: Vec<Vec<Rgb>> = (0..16).map(|number| ramp(48, 32, number * 8)).collect();
+        let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
+        let settings = ManualSettings { colors: 64, dither: 1.0, tolerance: 0 };
+
+        let palette = Palette::from_frames(&slices, 64).unwrap();
+        let indexed: Vec<Vec<u8>> =
+            slices.iter().map(|frame| ordered_dither(&mut palette.lookup(), frame, 48, 1.0).unwrap()).collect();
+        let indexed: Vec<&[u8]> = indexed.iter().map(Vec::as_slice).collect();
+        let one_palette = write_gif(48, 32, palette.colors(), &indexed, GifFps::Fps15).unwrap();
+
+        assert_eq!(encode_gif(48, 32, &slices, GifFps::Fps15, settings), Ok(one_palette));
     }
 
     fn ramp(width: usize, height: usize, shift: usize) -> Vec<Rgb> {
