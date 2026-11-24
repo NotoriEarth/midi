@@ -28,8 +28,8 @@ use settings::{RecordControl, RecordSettings, Selection};
 use tray::{TrayAction, TrayState};
 
 #[tauri::command]
-fn quality_levels() -> Vec<(usize, u8)> {
-    LEVELS.iter().map(|level| (level.colors, level.tolerance)).collect()
+fn quality_levels() -> Vec<(usize, u8, u8)> {
+    LEVELS.iter().map(|level| (level.colors, level.tolerance, level.loss)).collect()
 }
 
 #[tauri::command(async)]

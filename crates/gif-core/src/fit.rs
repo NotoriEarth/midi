@@ -7,14 +7,15 @@ use crate::writer::Rgb;
 pub struct QualityLevel {
     pub colors: usize,
     pub tolerance: u8,
+    pub loss: u8,
 }
 
-const fn level(colors: usize, tolerance: u8) -> QualityLevel {
-    QualityLevel { colors, tolerance }
+const fn level(colors: usize, tolerance: u8, loss: u8) -> QualityLevel {
+    QualityLevel { colors, tolerance, loss }
 }
 
 pub const LEVELS: [QualityLevel; 6] =
-    [level(255, 0), level(255, 4), level(255, 8), level(128, 8), level(64, 12), level(32, 16)];
+    [level(255, 0, 0), level(255, 4, 6), level(255, 4, 10), level(255, 4, 14), level(255, 4, 20), level(255, 4, 28)];
 
 pub const BEST_LEVEL: usize = 1;
 pub const FULL_SIZE: u32 = 100;
@@ -87,8 +88,8 @@ impl EncodeSettings {
     }
 
     fn at_level(self, level: usize) -> ManualSettings {
-        let QualityLevel { colors, tolerance } = LEVELS[level - BEST_LEVEL];
-        ManualSettings { colors, dither: self.dither, tolerance }
+        let QualityLevel { colors, tolerance, loss } = LEVELS[level - BEST_LEVEL];
+        ManualSettings { colors, dither: self.dither, tolerance, loss }
     }
 }
 
@@ -353,10 +354,10 @@ mod tests {
     }
 
     #[test]
-    fn a_chosen_level_gives_the_file_its_colors_and_tolerance_would() {
+    fn a_chosen_level_gives_the_file_its_colors_tolerance_and_loss_would() {
         let frames = noisy_film(64, 48, 6);
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        let by_hand = ManualSettings { colors: 128, dither: 1.0, tolerance: 8 };
+        let by_hand = ManualSettings { colors: 255, dither: 1.0, tolerance: 4, loss: 14 };
         let direct = encode_gif(64, 48, &slices, GifFps::Fps10, by_hand).unwrap();
 
         let encoded = encode_film(at(Quality::Level(4))).unwrap();

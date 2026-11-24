@@ -42,6 +42,7 @@ fn choosing_a_palette_needs_no_more_memory_than_one_list_of_its_colors() {
 
     assert_eq!(palette.colors().len(), 255);
     let one_list = distinct * BYTES_PER_LISTED_COLOR;
-    let a_little_more = 64 * 1024;
-    assert!(most_added <= one_list + a_little_more, "{most_added} bytes at most, one list is {one_list}");
+    let a_nearest_color_table_that_does_not_grow_with_the_colors = 1024 * 1024;
+    let budget = one_list + a_nearest_color_table_that_does_not_grow_with_the_colors;
+    assert!(most_added <= budget, "{most_added} bytes at most, one list is {one_list}");
 }

@@ -28,40 +28,135 @@ pub fn ordered_dither(
         return Err(DitherError::WidthDoesNotFit { width, pixels: pixels.len() });
     }
 
-    let reach = gap_between_palette_colors(nearest.palette()) * strength;
-    let indices = pixels.iter().enumerate().map(|(index, &pixel)| {
-        let nudge = position_threshold(index % width, index / width) * reach;
-        nearest.of(pixel.map(|channel| (f32::from(channel) + nudge).clamp(0.0, 255.0) as u8))
+    let partners = Partners::of(nearest.palette());
+    let mut blends = RememberedBlends::new();
+    let rows = pixels.chunks_exact(width).enumerate();
+    let indices = rows.flat_map(|(y, row)| {
+        let ranks = &BAYER[y % BAYER_SIZE];
+        row.iter().enumerate().map(move |(x, &pixel)| (pixel, ranks[x % BAYER_SIZE]))
+    });
+    let indices = indices.map(|(pixel, rank)| {
+        let blend = blends.of(pixel, || partners.best_blend(pixel, nearest.of(pixel), strength));
+        if rank < blend.partner_ranks { blend.partner } else { blend.closest }
     });
     Ok(indices.collect())
 }
 
-fn position_threshold(x: usize, y: usize) -> f32 {
-    let rank = f32::from(BAYER[y % BAYER_SIZE][x % BAYER_SIZE]);
-    let cells = (BAYER_SIZE * BAYER_SIZE) as f32;
-    (rank + 0.5) / cells - 0.5
+const PARTNERS_PER_COLOR: usize = 4;
+const PATTERN_CONTRAST_WEIGHT: f32 = 0.75;
+const LARGEST_MISS_A_BLEND_MAY_LEAVE: f32 = 0.1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Blend {
+    closest: u8,
+    partner: u8,
+    partner_ranks: u8,
 }
 
-fn gap_between_palette_colors(palette: &Palette) -> f32 {
-    let colors = palette.colors();
-    let distance = |a: Rgb, b: Rgb| {
-        let squared: f32 = (0..3).map(|channel| f32::from(a[channel].abs_diff(b[channel])).powi(2)).sum();
-        squared.sqrt()
-    };
-    let gap_to_closest_neighbor = |index: usize| {
-        (0..colors.len())
-            .filter(|&other| other != index)
-            .map(|other| distance(colors[index], colors[other]))
-            .fold(f32::INFINITY, f32::min)
-    };
+#[derive(Debug, Clone, Copy)]
+struct Partner {
+    index: u8,
+    step: [f32; 3],
+    squared_step: f32,
+}
 
-    if colors.len() < 2 {
-        return 0.0;
+struct Partners {
+    colors: Vec<[f32; 3]>,
+    per_color: usize,
+    nearest_others: Vec<Partner>,
+}
+
+impl Partners {
+    fn of(palette: &Palette) -> Self {
+        let colors: Vec<[f32; 3]> = palette.colors().iter().map(|color| color.map(f32::from)).collect();
+        let per_color = PARTNERS_PER_COLOR.min(colors.len().saturating_sub(1));
+        let mut nearest_others = Vec::with_capacity(colors.len() * per_color);
+        let mut others: Vec<u8> = Vec::with_capacity(colors.len());
+        for (index, &color) in colors.iter().enumerate() {
+            others.clear();
+            others.extend((0..colors.len()).filter(|&other| other != index).map(|other| other as u8));
+            let distance = |other: &u8| squared_length(minus(colors[usize::from(*other)], color));
+            if per_color < others.len() {
+                others.select_nth_unstable_by(per_color, |a, b| distance(a).total_cmp(&distance(b)));
+            }
+            nearest_others.extend(others[..per_color].iter().map(|&partner| {
+                let step = minus(colors[usize::from(partner)], color);
+                Partner { index: partner, step, squared_step: squared_length(step) }
+            }));
+        }
+        Self { colors, per_color, nearest_others }
     }
-    let average_gap: f32 =
-        (0..colors.len()).map(gap_to_closest_neighbor).sum::<f32>() / colors.len() as f32;
-    let same_nudge_on_three_channels = 3f32.sqrt();
-    average_gap / same_nudge_on_three_channels
+
+    fn best_blend(&self, pixel: Rgb, closest: u8, strength: f32) -> Blend {
+        let solid = Blend { closest, partner: closest, partner_ranks: 0 };
+        let base = self.colors[usize::from(closest)];
+        let off = minus(pixel.map(f32::from), base);
+        let error = squared_length(off);
+        if error == 0.0 {
+            return solid;
+        }
+
+        let first = usize::from(closest) * self.per_color;
+        let mut best = (f32::INFINITY, f32::INFINITY, 0.0, closest);
+        for &Partner { index, step, squared_step } in &self.nearest_others[first..first + self.per_color] {
+            if squared_step == 0.0 {
+                continue;
+            }
+            let share = (dot(off, step) / squared_step).min(1.0);
+            if share <= 0.0 {
+                continue;
+            }
+            let miss = squared_length(minus(off, step.map(|channel| channel * share)));
+            let cost = miss + PATTERN_CONTRAST_WEIGHT * share * (1.0 - share) * squared_step;
+            if cost < best.0 {
+                best = (cost, miss, share, index);
+            }
+        }
+
+        let (_, miss, share, partner) = best;
+        if miss > LARGEST_MISS_A_BLEND_MAY_LEAVE * error {
+            return solid;
+        }
+        let ranks = (BAYER_SIZE * BAYER_SIZE) as f32;
+        let partner_ranks = (share * strength * ranks - 0.5).ceil().clamp(0.0, ranks) as u8;
+        Blend { closest, partner, partner_ranks }
+    }
+}
+
+fn minus(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn squared_length(a: [f32; 3]) -> f32 {
+    dot(a, a)
+}
+
+struct RememberedBlends {
+    slots: Vec<(u32, Blend)>,
+}
+
+impl RememberedBlends {
+    const SLOT_BITS: u32 = 16;
+    const EMPTY: u32 = u32::MAX;
+
+    fn new() -> Self {
+        let empty = Blend { closest: 0, partner: 0, partner_ranks: 0 };
+        Self { slots: vec![(Self::EMPTY, empty); 1 << Self::SLOT_BITS] }
+    }
+
+    fn of(&mut self, pixel: Rgb, find: impl FnOnce() -> Blend) -> Blend {
+        let color = u32::from(pixel[0]) << 16 | u32::from(pixel[1]) << 8 | u32::from(pixel[2]);
+        let slot = (color.wrapping_mul(0x9E37_79B1) >> (32 - Self::SLOT_BITS)) as usize;
+        let remembered = &mut self.slots[slot];
+        if remembered.0 != color {
+            *remembered = (color, find());
+        }
+        remembered.1
+    }
 }
 
 #[cfg(test)]
@@ -160,6 +255,22 @@ mod tests {
         let after = ordered_dither(&mut palette.lookup(), &after, 32, 1.0).unwrap();
         let changed: Vec<usize> = (0..before.len()).filter(|&index| before[index] != after[index]).collect();
         assert!(changed.is_empty() || changed == [500], "{changed:?}");
+    }
+
+    #[test]
+    fn a_color_between_two_hues_is_drawn_with_both_in_proportion() {
+        let red = [255, 0, 0];
+        let palette = Palette::from_frames(&[&[red, [0, 0, 255]]], 2).unwrap();
+        let indices = ordered_dither(&mut palette.lookup(), &[[96, 0, 160]; 64], 8, 1.0).unwrap();
+        let reds = indices.iter().filter(|&&index| index == palette.nearest(red)).count();
+        assert!((22..=26).contains(&reds), "{reds} of 64 pixels are red");
+    }
+
+    #[test]
+    fn a_flat_color_no_blend_comes_close_to_stays_one_solid_color() {
+        let palette = black_and_white();
+        let indices = ordered_dither(&mut palette.lookup(), &[[200, 0, 0]; 64], 8, 1.0).unwrap();
+        assert!(indices.iter().all(|&index| index == indices[0]), "{indices:?}");
     }
 
     #[test]

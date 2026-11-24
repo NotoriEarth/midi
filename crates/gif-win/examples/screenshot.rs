@@ -15,7 +15,7 @@ fn main() {
     let region = ScreenRect { monitor, x: 0, y: 0, width: WIDTH, height: HEIGHT };
     let pixels = capturer.capture(region).expect("the top-left corner is on the monitor");
 
-    let settings = ManualSettings { colors: ManualSettings::MAX_COLORS, dither: 1.0, tolerance: 0 };
+    let settings = ManualSettings { colors: ManualSettings::MAX_COLORS, dither: 1.0, tolerance: 0, loss: 0 };
     let bytes = encode_gif(WIDTH as u16, HEIGHT as u16, &[&pixels], GifFps::Fps10, settings)
         .expect("the capture is WIDTH x HEIGHT");
     std::fs::write(&path, &bytes).expect("the output path is writable");

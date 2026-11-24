@@ -11,6 +11,25 @@ impl FramePatch {
     pub(crate) fn whole_frame(pixels: &[u8], width: usize) -> FramePatch {
         FramePatch { left: 0, top: 0, width, height: pixels.len() / width, pixels: pixels.to_vec() }
     }
+
+    pub(crate) fn under(&self, frame: &[u8], frame_width: usize) -> Vec<u8> {
+        let mut under = Vec::with_capacity(self.width * self.height);
+        for y in self.top..self.top + self.height {
+            under.extend_from_slice(&frame[y * frame_width + self.left..][..self.width]);
+        }
+        under
+    }
+
+    pub(crate) fn paint_over(&self, frame: &mut [u8], frame_width: usize, transparent: u8) {
+        for (row, patch_row) in self.pixels.chunks_exact(self.width).enumerate() {
+            let start = (self.top + row) * frame_width + self.left;
+            for (shown, &pixel) in frame[start..start + self.width].iter_mut().zip(patch_row) {
+                if pixel != transparent {
+                    *shown = pixel;
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn changed_patch(previous: &[u8], current: &[u8], width: usize, transparent: u8) -> FramePatch {

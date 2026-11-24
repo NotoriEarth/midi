@@ -367,7 +367,7 @@ mod tests {
     fn encoding_from_the_spool_gives_the_same_gif_as_encoding_from_memory() {
         let frames: Vec<Vec<Rgb>> = (0..5).map(frame).collect();
         let slices: Vec<&[Rgb]> = frames.iter().map(Vec::as_slice).collect();
-        let settings = ManualSettings { colors: 16, dither: 1.0, tolerance: 8 };
+        let settings = ManualSettings { colors: 16, dither: 1.0, tolerance: 8, loss: 0 };
         let mut spool = Spool::create_in(&empty_folder("same-gif"), SIZE).unwrap();
         for pixels in &frames {
             spool.push_next(pixels).unwrap();

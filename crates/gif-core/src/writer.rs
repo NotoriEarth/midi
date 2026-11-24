@@ -24,7 +24,7 @@ pub fn write_gif(
     let pixel_count = usize::from(width) * usize::from(height);
     check_input(pixel_count, palette, frames)?;
 
-    let mut writer = GifWriter::new(width, height, palette, fps)?;
+    let mut writer = GifWriter::new(width, height, palette, fps, 0)?;
     for (index, frame) in frames.iter().enumerate() {
         writer.add_frame(frame, index..index + 1)?;
     }
@@ -37,22 +37,23 @@ pub struct GifWriter {
     fps: GifFps,
     row_width: usize,
     pixel_count: usize,
-    palette_len: usize,
-    min_code_size: u8,
+    global_palette: Vec<Rgb>,
+    local_palette: Option<Vec<Rgb>>,
     frames_written: usize,
-    last_frame: Vec<u8>,
+    on_screen: Vec<u8>,
+    asked: Vec<u8>,
     longer_runs: LongerRuns,
+    loss: u8,
+    distances: Option<ColorDistances>,
 }
 
 impl GifWriter {
-    pub fn new(width: u16, height: u16, palette: &[Rgb], fps: GifFps) -> Result<Self, GifWriteError> {
+    pub fn new(width: u16, height: u16, palette: &[Rgb], fps: GifFps, loss: u8) -> Result<Self, GifWriteError> {
         let pixel_count = usize::from(width) * usize::from(height);
         if pixel_count == 0 {
             return Err(GifWriteError::EmptyImage);
         }
-        if palette.is_empty() || palette.len() > MAX_PALETTE_COLORS {
-            return Err(GifWriteError::PaletteSize(palette.len()));
-        }
+        check_palette(palette)?;
 
         let table_bits = color_table_bits(palette.len() + 1);
         let mut out = Vec::new();
@@ -64,31 +65,74 @@ impl GifWriter {
             fps,
             row_width: usize::from(width),
             pixel_count,
-            palette_len: palette.len(),
-            min_code_size: table_bits.max(2),
+            global_palette: palette.to_vec(),
+            local_palette: None,
             frames_written: 0,
-            last_frame: Vec::new(),
+            on_screen: Vec::new(),
+            asked: Vec::new(),
             longer_runs: LongerRuns::new(),
+            loss,
+            distances: (loss > 0).then(|| ColorDistances::of(palette)),
         })
+    }
+
+    pub fn use_palette(&mut self, palette: &[Rgb]) -> Result<(), GifWriteError> {
+        check_palette(palette)?;
+        if palette == self.palette() {
+            return Ok(());
+        }
+        self.local_palette = (palette != self.global_palette).then(|| palette.to_vec());
+        self.on_screen.clear();
+        if self.loss > 0 {
+            self.distances = Some(ColorDistances::of(palette));
+        }
+        Ok(())
+    }
+
+    fn palette(&self) -> &[Rgb] {
+        self.local_palette.as_deref().unwrap_or(&self.global_palette)
     }
 
     pub fn add_frame(&mut self, indices: &[u8], slots: std::ops::Range<usize>) -> Result<(), GifWriteError> {
         let frame = self.frames_written;
-        check_frame(frame, indices, self.pixel_count, self.palette_len)?;
+        let palette_len = self.palette().len();
+        check_frame(frame, indices, self.pixel_count, palette_len)?;
 
-        let transparent = self.palette_len as u8;
-        let patch = if frame == 0 {
+        let transparent = palette_len as u8;
+        let table_bits = color_table_bits(palette_len + 1);
+        let min_code_size = table_bits.max(2);
+        let mut patch = if self.on_screen.is_empty() {
             FramePatch::whole_frame(indices, self.row_width)
         } else {
-            changed_patch(&self.last_frame, indices, self.row_width, transparent)
+            let pixels = indices.iter().zip(&self.asked).zip(&self.on_screen);
+            let keep_unchanged = |((&asked, &asked_before), &shown)| if asked == asked_before { shown } else { asked };
+            let unchanged_ones_kept: Vec<u8> = pixels.map(keep_unchanged).collect();
+            changed_patch(&self.on_screen, &unchanged_ones_kept, self.row_width, transparent)
         };
         write_frame_control(&mut self.out, slots_delay(self.fps, slots), transparent);
-        write_image_position(&mut self.out, &patch);
-        self.out.push(self.min_code_size);
-        write_sub_blocks(&mut self.out, &lzw(&patch.pixels, self.min_code_size, &mut self.longer_runs));
+        let local_table_bits = self.local_palette.is_some().then_some(table_bits);
+        write_image_position(&mut self.out, &patch, local_table_bits);
+        if let Some(local_palette) = &self.local_palette {
+            write_color_table(&mut self.out, local_palette, table_bits);
+        }
+        self.out.push(min_code_size);
+        let stand_ins = self.distances.as_ref().map(|distances| StandIns {
+            distances,
+            farthest: u16::from(self.loss).pow(2),
+            wanted: patch.under(indices, self.row_width),
+            beneath: if self.on_screen.is_empty() { Vec::new() } else { patch.under(&self.on_screen, self.row_width) },
+            transparent,
+        });
+        let codes = lzw(&mut patch.pixels, min_code_size, &mut self.longer_runs, stand_ins.as_ref());
+        write_sub_blocks(&mut self.out, &codes);
 
-        self.last_frame.clear();
-        self.last_frame.extend_from_slice(indices);
+        if self.on_screen.is_empty() {
+            self.on_screen = patch.pixels;
+        } else {
+            patch.paint_over(&mut self.on_screen, self.row_width, transparent);
+        }
+        self.asked.clear();
+        self.asked.extend_from_slice(indices);
         self.frames_written += 1;
         Ok(())
     }
@@ -117,11 +161,16 @@ fn check_input(pixel_count: usize, palette: &[Rgb], frames: &[&[u8]]) -> Result<
     if frames.is_empty() {
         return Err(GifWriteError::NoFrames);
     }
-    if palette.is_empty() || palette.len() > MAX_PALETTE_COLORS {
-        return Err(GifWriteError::PaletteSize(palette.len()));
-    }
+    check_palette(palette)?;
     for (frame, pixels) in frames.iter().enumerate() {
         check_frame(frame, pixels, pixel_count, palette.len())?;
+    }
+    Ok(())
+}
+
+fn check_palette(palette: &[Rgb]) -> Result<(), GifWriteError> {
+    if palette.is_empty() || palette.len() > MAX_PALETTE_COLORS {
+        return Err(GifWriteError::PaletteSize(palette.len()));
     }
     Ok(())
 }
@@ -187,13 +236,13 @@ fn write_frame_control(out: &mut Vec<u8>, delay: u16, transparent: u8) {
     out.extend_from_slice(&[transparent, BLOCK_END]);
 }
 
-fn write_image_position(out: &mut Vec<u8>, patch: &FramePatch) {
-    let no_local_table = 0;
+fn write_image_position(out: &mut Vec<u8>, patch: &FramePatch, local_table_bits: Option<u8>) {
+    let has_local_table = 0b1000_0000;
     out.push(IMAGE);
     for value in [patch.left, patch.top, patch.width, patch.height] {
         out.extend_from_slice(&(value as u16).to_le_bytes());
     }
-    out.push(no_local_table);
+    out.push(local_table_bits.map_or(0, |bits| has_local_table | (bits - 1)));
 }
 
 fn write_sub_blocks(out: &mut Vec<u8>, data: &[u8]) {
@@ -211,6 +260,9 @@ const CODE_TABLE_FULL: u16 = 1 << MAX_CODE_BITS;
 struct LongerRuns {
     codes: Vec<u16>,
     filled: Vec<usize>,
+    first_longer: Vec<u16>,
+    next_longer: Vec<u16>,
+    last_pixel: Vec<u8>,
 }
 
 impl LongerRuns {
@@ -218,7 +270,14 @@ impl LongerRuns {
 
     fn new() -> Self {
         let every_run_and_pixel = usize::from(CODE_TABLE_FULL) << 8;
-        Self { codes: vec![Self::NONE; every_run_and_pixel], filled: Vec::with_capacity(usize::from(CODE_TABLE_FULL)) }
+        let every_code = usize::from(CODE_TABLE_FULL);
+        Self {
+            codes: vec![Self::NONE; every_run_and_pixel],
+            filled: Vec::with_capacity(every_code),
+            first_longer: vec![Self::NONE; every_code],
+            next_longer: vec![Self::NONE; every_code],
+            last_pixel: vec![0; every_code],
+        }
     }
 
     fn slot(run: u16, pixel: u8) -> usize {
@@ -234,17 +293,74 @@ impl LongerRuns {
         let slot = Self::slot(run, pixel);
         self.codes[slot] = code;
         self.filled.push(slot);
+        self.next_longer[usize::from(code)] = self.first_longer[usize::from(run)];
+        self.first_longer[usize::from(run)] = code;
+        self.last_pixel[usize::from(code)] = pixel;
+    }
+
+    fn nearest(&self, run: u16, position: usize, stand_ins: &StandIns) -> Option<(u16, u8)> {
+        let distance_to = stand_ins.distances.from(stand_ins.wanted[position]);
+        let mut nearest = None;
+        let mut nearest_distance = stand_ins.farthest;
+        let mut code = self.first_longer[usize::from(run)];
+        while code != Self::NONE {
+            let candidate = self.last_pixel[usize::from(code)];
+            let distance = distance_to[usize::from(stand_ins.shown(candidate, position))];
+            if distance <= nearest_distance {
+                (nearest, nearest_distance) = (Some((code, candidate)), distance);
+            }
+            code = self.next_longer[usize::from(code)];
+        }
+        nearest
     }
 
     fn clear(&mut self) {
         for &slot in &self.filled {
             self.codes[slot] = Self::NONE;
+            self.first_longer[slot >> 8] = Self::NONE;
         }
         self.filled.clear();
     }
 }
 
-fn lzw(pixels: &[u8], min_code_size: u8, longer_runs: &mut LongerRuns) -> Vec<u8> {
+#[derive(Debug, Clone)]
+struct ColorDistances(Vec<[u16; 256]>);
+
+impl ColorDistances {
+    const UNREACHABLE: u16 = u16::MAX;
+
+    fn of(palette: &[Rgb]) -> Self {
+        let mut distances = vec![[Self::UNREACHABLE; 256]; 256];
+        for (from, a) in palette.iter().enumerate() {
+            for (to, b) in palette.iter().enumerate() {
+                let squared: u32 = a.iter().zip(b).map(|(&a, &b)| u32::from(a.abs_diff(b)).pow(2)).sum();
+                distances[from][to] = squared.min(u32::from(Self::UNREACHABLE)) as u16;
+            }
+        }
+        Self(distances)
+    }
+
+    fn from(&self, pixel: u8) -> &[u16; 256] {
+        &self.0[usize::from(pixel)]
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StandIns<'a> {
+    distances: &'a ColorDistances,
+    farthest: u16,
+    wanted: Vec<u8>,
+    beneath: Vec<u8>,
+    transparent: u8,
+}
+
+impl StandIns<'_> {
+    fn shown(&self, pixel: u8, position: usize) -> u8 {
+        if pixel == self.transparent { self.beneath[position] } else { pixel }
+    }
+}
+
+fn lzw(pixels: &mut [u8], min_code_size: u8, longer_runs: &mut LongerRuns, stand_ins: Option<&StandIns>) -> Vec<u8> {
     let clear = 1u16 << min_code_size;
     let end = clear + 1;
     let first_free_code = clear + 2;
@@ -257,8 +373,15 @@ fn lzw(pixels: &[u8], min_code_size: u8, longer_runs: &mut LongerRuns) -> Vec<u8
     bits.push(clear, code_bits);
 
     let mut run = u16::from(pixels[0]);
-    for &pixel in &pixels[1..] {
+    for (position, shown) in pixels.iter_mut().enumerate().skip(1) {
+        let pixel = *shown;
         if let Some(longer) = longer_runs.get(run, pixel) {
+            run = longer;
+            continue;
+        }
+        let nearest = stand_ins.and_then(|stand_ins| longer_runs.nearest(run, position, stand_ins));
+        if let Some((longer, stand_in)) = nearest {
+            *shown = stand_in;
             run = longer;
             continue;
         }
@@ -467,6 +590,191 @@ mod tests {
         let bytes = write_gif(2, 2, &[BLACK, RED], &[&frame[..]; 4], GifFps::Fps15).unwrap();
         let shown = vec![(6, frame.to_vec()), (7, frame.to_vec()), (7, frame.to_vec()), (6, frame.to_vec())];
         assert_eq!(decode(&bytes).frames, shown);
+    }
+
+    fn decoded_colors(bytes: &[u8]) -> Vec<(Vec<Rgb>, bool)> {
+        let mut options = gif::DecodeOptions::new();
+        options.set_color_output(gif::ColorOutput::Indexed);
+        let mut decoder = options.read_info(bytes).expect("a readable GIF header");
+        let global = decoder.global_palette().expect("a global palette").to_vec();
+        let width = usize::from(decoder.width());
+        let mut canvas = vec![BLACK; width * usize::from(decoder.height())];
+        let mut frames = Vec::new();
+        while let Some(frame) = decoder.read_next_frame().expect("a readable frame") {
+            let table = frame.palette.as_deref().unwrap_or(&global);
+            let (left, top) = (usize::from(frame.left), usize::from(frame.top));
+            let patch_width = usize::from(frame.width);
+            for (position, &index) in frame.buffer.iter().enumerate() {
+                if Some(index) != frame.transparent {
+                    let (x, y) = (left + position % patch_width, top + position / patch_width);
+                    let color = &table[usize::from(index) * 3..][..3];
+                    canvas[y * width + x] = [color[0], color[1], color[2]];
+                }
+            }
+            frames.push((canvas.clone(), frame.palette.is_some()));
+        }
+        frames
+    }
+
+    fn gif_with_palettes(scenes: &[(&[Rgb], &[&[u8]])]) -> Vec<u8> {
+        gif_with_loss(3, scenes, 0)
+    }
+
+    fn gif_with_loss(width: u16, scenes: &[(&[Rgb], &[&[u8]])], loss: u8) -> Vec<u8> {
+        let height = (scenes[0].1[0].len() / usize::from(width)) as u16;
+        let mut writer = GifWriter::new(width, height, scenes[0].0, GifFps::Fps10, loss).unwrap();
+        for (palette, frames) in scenes {
+            writer.use_palette(palette).unwrap();
+            for frame in *frames {
+                writer.add_frame(frame, 0..1).unwrap();
+            }
+        }
+        writer.finish().unwrap()
+    }
+
+    #[test]
+    fn frames_after_a_palette_switch_show_the_colors_of_the_new_palette() {
+        let blue = [0, 0, 255];
+        let first: &[Rgb] = &[BLACK, RED];
+        let second: &[Rgb] = &[GREEN, blue, RED];
+        let bytes = gif_with_palettes(&[
+            (first, &[&[0, 1, 0], &[0, 1, 1]]),
+            (second, &[&[0, 1, 2], &[0, 0, 2]]),
+            (first, &[&[1, 1, 0]]),
+        ]);
+
+        let shown_and_whether_it_carries_its_own_table = vec![
+            (vec![BLACK, RED, BLACK], false),
+            (vec![BLACK, RED, RED], false),
+            (vec![GREEN, blue, RED], true),
+            (vec![GREEN, GREEN, RED], true),
+            (vec![RED, RED, BLACK], false),
+        ];
+        assert_eq!(decoded_colors(&bytes), shown_and_whether_it_carries_its_own_table);
+    }
+
+    #[test]
+    fn switching_to_the_palette_already_in_use_changes_nothing() {
+        let palette: &[Rgb] = &[BLACK, RED];
+        let frames: &[&[u8]] = &[&[0, 1, 0], &[0, 1, 1], &[1, 1, 1]];
+        let switched = gif_with_palettes(&[(palette, &frames[..1]), (palette, &frames[1..])]);
+        assert_eq!(switched, write_gif(3, 1, palette, frames, GifFps::Fps10).unwrap());
+    }
+
+    const CLIP_WIDTH: usize = 64;
+    const GOLDEN_LOSSLESS: (usize, u64) = (10427, 0x8137_e1c0_0c13_d6ca);
+
+    fn grays() -> Vec<Rgb> {
+        (0..255).map(|value| [value, value, value]).collect()
+    }
+
+    fn shuffled_grays() -> Vec<Rgb> {
+        (0..255).map(|index| [(index * 97 % 255) as u8; 3]).collect()
+    }
+
+    fn grainy_clip_with_a_moving_square() -> Vec<Vec<u8>> {
+        let mut seed = 0x1234_5678u32;
+        let mut grain = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % 9) as usize
+        };
+        let background: Vec<u8> =
+            (0..CLIP_WIDTH * 48).map(|index| ((index % CLIP_WIDTH) * 2 + index / CLIP_WIDTH + grain()) as u8).collect();
+        (0..6)
+            .map(|number| {
+                let mut frame = background.clone();
+                for y in 4 + number * 4..16 + number * 4 {
+                    for x in 4 + number * 6..16 + number * 6 {
+                        frame[y * CLIP_WIDTH + x] = (200 - x - y + grain()) as u8;
+                    }
+                }
+                frame
+            })
+            .collect()
+    }
+
+    fn two_scenes_of(clip: &[Vec<u8>]) -> (Vec<Rgb>, Vec<Rgb>, Vec<&[u8]>) {
+        (grays(), shuffled_grays(), clip.iter().map(Vec::as_slice).collect())
+    }
+
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    #[test]
+    fn without_a_loss_allowance_the_file_is_byte_for_byte_what_the_lossless_writer_made() {
+        let clip = grainy_clip_with_a_moving_square();
+        let (first, second, frames) = two_scenes_of(&clip);
+
+        let bytes = gif_with_loss(CLIP_WIDTH as u16, &[(&first, &frames[..3]), (&second, &frames[3..])], 0);
+
+        assert_eq!((bytes.len(), fnv1a(&bytes)), GOLDEN_LOSSLESS);
+    }
+
+    fn farthest_shown_from_asked(bytes: &[u8], asked: &[Vec<Rgb>]) -> (u32, usize) {
+        let shown = decoded_colors(bytes);
+        assert_eq!(shown.len(), asked.len());
+        let pairs = shown.iter().zip(asked).flat_map(|((shown, _), asked)| shown.iter().zip(asked));
+        let distances: Vec<u32> = pairs
+            .map(|(shown, asked)| shown.iter().zip(asked).map(|(&a, &b)| u32::from(a.abs_diff(b)).pow(2)).sum())
+            .collect();
+        (distances.iter().copied().max().unwrap(), distances.iter().filter(|&&distance| distance > 0).count())
+    }
+
+    #[test]
+    fn with_a_loss_allowance_every_shown_pixel_is_within_the_allowance_of_the_color_asked_for() {
+        let clip = grainy_clip_with_a_moving_square();
+        let (first, second, frames) = two_scenes_of(&clip);
+        let asked: Vec<Vec<Rgb>> = clip
+            .iter()
+            .enumerate()
+            .map(|(number, frame)| {
+                let palette = if number < 3 { &first } else { &second };
+                frame.iter().map(|&index| palette[usize::from(index)]).collect()
+            })
+            .collect();
+
+        for loss in [1u8, 7, 20, 64] {
+            let bytes = gif_with_loss(CLIP_WIDTH as u16, &[(&first, &frames[..3]), (&second, &frames[3..])], loss);
+
+            let (farthest, moved) = farthest_shown_from_asked(&bytes, &asked);
+            assert!(farthest <= u32::from(loss).pow(2), "loss {loss}: a pixel moved {farthest} squared");
+            if loss >= 7 {
+                assert!(moved > 0, "loss {loss} moved no pixel");
+            }
+        }
+    }
+
+    #[test]
+    fn a_larger_loss_allowance_gives_a_smaller_file() {
+        let clip = grainy_clip_with_a_moving_square();
+        let frames: Vec<&[u8]> = clip.iter().map(Vec::as_slice).collect();
+
+        let size_at = |loss| gif_with_loss(CLIP_WIDTH as u16, &[(&grays(), &frames)], loss).len();
+        let sizes: Vec<usize> = [0, 4, 8, 16, 32].into_iter().map(size_at).collect();
+
+        assert!(sizes.windows(2).all(|pair| pair[0] > pair[1]), "{sizes:?}");
+    }
+
+    #[test]
+    fn a_still_after_a_lossy_frame_keeps_its_picture_and_later_frames_stay_within_the_allowance() {
+        let clip = grainy_clip_with_a_moving_square();
+        let still = vec![clip[0].clone(); 3];
+        let frames: Vec<&[u8]> = still.iter().chain(&clip[1..]).map(Vec::as_slice).collect();
+        let palette = grays();
+        let loss = 12;
+
+        let bytes = gif_with_loss(CLIP_WIDTH as u16, &[(&palette, &frames)], loss);
+
+        let asked: Vec<Vec<Rgb>> =
+            frames.iter().map(|frame| frame.iter().map(|&index| palette[usize::from(index)]).collect()).collect();
+        let first_frame_alone = gif_with_loss(CLIP_WIDTH as u16, &[(&palette, &frames[..1])], loss);
+        assert!(farthest_shown_from_asked(&first_frame_alone, &asked[..1]).1 > 0, "the first frame is lossy");
+        let shown = decoded_colors(&bytes);
+        assert!(shown[1..3].iter().all(|(picture, _)| *picture == shown[0].0), "the still shows the first picture");
+        assert!(farthest_shown_from_asked(&bytes, &asked).0 <= u32::from(loss).pow(2));
     }
 
     #[test]
