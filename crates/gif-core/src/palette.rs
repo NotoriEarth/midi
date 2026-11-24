@@ -16,6 +16,7 @@ type CountedColor = (Rgb, u32);
 
 impl Palette {
     pub const MAX_COLORS: usize = NOT_ASKED_YET as usize;
+    const REFINING_PASSES: usize = 3;
 
     pub fn from_frames(frames: &[&[Rgb]], max_colors: usize) -> Result<Palette, PaletteError> {
         if !(1..=Self::MAX_COLORS).contains(&max_colors) {
@@ -40,16 +41,30 @@ impl Palette {
         let mut boxes = Vec::with_capacity(max_colors);
         boxes.push(ColorBox::new(0..colors.len(), &colors));
         while boxes.len() < max_colors {
-            let Some(widest) = widest_box_that_can_split(&boxes) else {
+            let Some(worst) = worst_box_that_can_split(&boxes) else {
                 break;
             };
-            let ColorBox { colors: Range { start, end }, widest: (_, channel), pixels } = boxes.swap_remove(widest);
-            let cut = start + split_at_median(&mut colors[start..end], channel, pixels);
+            let Range { start, end } = boxes.swap_remove(worst).colors;
+            let cut = start + split_where_error_is_least(&mut colors[start..end]);
             boxes.push(ColorBox::new(start..cut, &colors));
             boxes.push(ColorBox::new(cut..end, &colors));
         }
 
-        Ok(Palette(boxes.into_iter().map(|color_box| average(&colors[color_box.colors])).collect()))
+        let mut palette = Palette(boxes.into_iter().map(|color_box| color_box.moments.mean()).collect());
+        for _ in 0..Self::REFINING_PASSES {
+            palette = palette.moved_to_the_middle_of(&colors);
+        }
+        Ok(palette)
+    }
+
+    fn moved_to_the_middle_of(&self, colors: &[CountedColor]) -> Palette {
+        let near_cells = NearCells::of(self);
+        let mut nearest_to = vec![Moments::default(); self.0.len()];
+        for &(color, count) in colors {
+            nearest_to[usize::from(near_cells.nearest(color))].add(color, count);
+        }
+        let moved = self.0.iter().zip(&nearest_to).map(|(&color, moments)| if moments.pixels == 0 { color } else { moments.mean() });
+        Palette(moved.collect())
     }
 
     pub fn colors(&self) -> &[Rgb] {
@@ -129,6 +144,11 @@ impl NearCells {
         let cell = Self::cell_of(pixel);
         &self.candidates[self.starts[cell]..self.starts[cell + 1]]
     }
+
+    fn nearest(&self, pixel: Rgb) -> u8 {
+        let best = self.near(pixel).iter().map(|&(color, index)| (squared_distance(color, pixel), index)).min();
+        best.expect("every cell has at least one candidate").1
+    }
 }
 
 fn nearest_in(low: Rgb, high: Rgb, color: Rgb) -> u32 {
@@ -154,9 +174,7 @@ impl NearestColor<'_> {
 
     #[inline(never)]
     fn search(&self, pixel: Rgb) -> u8 {
-        let near = self.near_cells.near(pixel).iter();
-        let best = near.map(|&(color, index)| (squared_distance(color, pixel), index)).min();
-        best.expect("every cell has at least one candidate").1
+        self.near_cells.nearest(pixel)
     }
 }
 
@@ -202,95 +220,109 @@ fn squared_distance(a: Rgb, b: Rgb) -> u32 {
     (0..3).map(|channel| u32::from(a[channel].abs_diff(b[channel])).pow(2)).sum()
 }
 
-fn widest_channel(colors: &[CountedColor]) -> (u8, usize) {
-    (0..3)
-        .map(|channel| {
-            let values = colors.iter().map(|(color, _)| color[channel]);
-            let range = values.clone().max().unwrap_or(0) - values.min().unwrap_or(0);
-            (range, channel)
-        })
-        .rev()
-        .max_by_key(|&(range, _)| range)
-        .expect("there are three channels")
+#[derive(Debug, Clone, Copy, Default)]
+struct Moments {
+    pixels: u64,
+    sums: [u64; 3],
+    squares: u64,
 }
 
-fn pixel_count(colors: &[CountedColor]) -> u64 {
-    colors.iter().map(|&(_, count)| u64::from(count)).sum()
+impl Moments {
+    fn of(colors: &[CountedColor]) -> Self {
+        let mut moments = Moments::default();
+        for &(color, count) in colors {
+            moments.add(color, count);
+        }
+        moments
+    }
+
+    fn add(&mut self, color: Rgb, count: u32) {
+        let count = u64::from(count);
+        self.pixels += count;
+        for channel in 0..3 {
+            let value = u64::from(color[channel]);
+            self.sums[channel] += value * count;
+            self.squares += value * value * count;
+        }
+    }
+
+    fn plus(self, other: Moments) -> Moments {
+        Moments {
+            pixels: self.pixels + other.pixels,
+            sums: std::array::from_fn(|channel| self.sums[channel] + other.sums[channel]),
+            squares: self.squares + other.squares,
+        }
+    }
+
+    fn minus(self, other: Moments) -> Moments {
+        Moments {
+            pixels: self.pixels - other.pixels,
+            sums: std::array::from_fn(|channel| self.sums[channel] - other.sums[channel]),
+            squares: self.squares - other.squares,
+        }
+    }
+
+    fn squared_error(&self) -> f64 {
+        let spread_of_the_mean: f64 = self.sums.iter().map(|&sum| (sum as f64).powi(2)).sum();
+        self.squares as f64 - spread_of_the_mean / self.pixels as f64
+    }
+
+    fn mean(&self) -> Rgb {
+        self.sums.map(|sum| ((sum + self.pixels / 2) / self.pixels) as u8)
+    }
 }
 
 struct ColorBox {
     colors: Range<usize>,
-    widest: (u8, usize),
-    pixels: u64,
+    moments: Moments,
 }
 
 impl ColorBox {
     fn new(colors: Range<usize>, every_color: &[CountedColor]) -> Self {
-        let inside = &every_color[colors.clone()];
-        ColorBox { widest: widest_channel(inside), pixels: pixel_count(inside), colors }
+        ColorBox { moments: Moments::of(&every_color[colors.clone()]), colors }
     }
 }
 
-fn widest_box_that_can_split(boxes: &[ColorBox]) -> Option<usize> {
+fn worst_box_that_can_split(boxes: &[ColorBox]) -> Option<usize> {
     (0..boxes.len())
         .rev()
         .filter(|&index| boxes[index].colors.len() > 1)
-        .max_by_key(|&index| (boxes[index].widest.0, boxes[index].pixels))
+        .max_by(|&a, &b| boxes[a].moments.squared_error().total_cmp(&boxes[b].moments.squared_error()))
 }
 
-fn split_at_median(colors: &mut [CountedColor], channel: usize, pixels: u64) -> usize {
-    let half = pixels.div_ceil(2);
-    let mut per_value = [0u64; 256];
+fn split_where_error_is_least(colors: &mut [CountedColor]) -> usize {
+    let mut per_value = [[Moments::default(); 256]; 3];
     for &(color, count) in colors.iter() {
-        per_value[usize::from(color[channel])] += u64::from(count);
-    }
-    let mut below = 0;
-    let mut median = u8::MAX;
-    for value in 0..=u8::MAX {
-        if below + per_value[usize::from(value)] >= half {
-            median = value;
-            break;
-        }
-        below += per_value[usize::from(value)];
-    }
-
-    let (lower_end, upper_start) = partition_around(colors, channel, median);
-    let at_median = &mut colors[lower_end..upper_start];
-    at_median.sort_unstable_by_key(|&(color, _)| color);
-    let mut seen = below;
-    let reaches_half = at_median.iter().position(|&(_, count)| {
-        seen += u64::from(count);
-        seen >= half
-    });
-    let position = lower_end + reaches_half.expect("the median value holds the pixel that reaches half");
-    (position + 1).clamp(1, colors.len() - 1)
-}
-
-fn partition_around(colors: &mut [CountedColor], channel: usize, median: u8) -> (usize, usize) {
-    let (mut lower_end, mut next, mut upper_start) = (0, 0, colors.len());
-    while next < upper_start {
-        match colors[next].0[channel].cmp(&median) {
-            std::cmp::Ordering::Less => {
-                colors.swap(lower_end, next);
-                lower_end += 1;
-                next += 1;
-            }
-            std::cmp::Ordering::Greater => {
-                upper_start -= 1;
-                colors.swap(next, upper_start);
-            }
-            std::cmp::Ordering::Equal => next += 1,
+        for channel in 0..3 {
+            per_value[channel][usize::from(color[channel])].add(color, count);
         }
     }
-    (lower_end, upper_start)
-}
+    let whole = per_value[0].iter().fold(Moments::default(), |sum, &moments| sum.plus(moments));
 
-fn average(colors: &[CountedColor]) -> Rgb {
-    let total = pixel_count(colors);
-    std::array::from_fn(|channel| {
-        let sum: u64 = colors.iter().map(|&(color, count)| u64::from(color[channel]) * u64::from(count)).sum();
-        ((sum + total / 2) / total) as u8
-    })
+    let mut best: Option<(f64, usize, u8)> = None;
+    for (channel, values) in per_value.iter().enumerate() {
+        let mut below = Moments::default();
+        for value in 0..u8::MAX {
+            below = below.plus(values[usize::from(value)]);
+            if below.pixels == 0 || below.pixels == whole.pixels {
+                continue;
+            }
+            let error = below.squared_error() + whole.minus(below).squared_error();
+            if best.is_none_or(|(least, ..)| error < least) {
+                best = Some((error, channel, value));
+            }
+        }
+    }
+    let (_, channel, highest_below) = best.expect("a box of two or more colors differs in some channel");
+
+    let mut lower_end = 0;
+    for next in 0..colors.len() {
+        if colors[next].0[channel] <= highest_below {
+            colors.swap(lower_end, next);
+            lower_end += 1;
+        }
+    }
+    lower_end
 }
 
 #[cfg(test)]
@@ -378,48 +410,79 @@ mod tests {
         assert_eq!(palette.to_indices(&[gray(10), gray(200), [120, 130, 140]]), [black, white, white]);
     }
 
-    fn median_cut_by_sorting(frames: &[&[Rgb]], max_colors: usize) -> Vec<Rgb> {
-        let mut counts = ColorCounts::new();
-        for frame in frames {
-            counts.add(frame);
-        }
-        let mut boxes = vec![counts.in_color_order()];
+    fn plain_median_cut(pixels: &[Rgb], max_colors: usize) -> Palette {
+        let widest = |colors: &[Rgb]| {
+            let range = |channel: usize| {
+                let values = colors.iter().map(|color| color[channel]);
+                values.clone().max().unwrap() - values.min().unwrap()
+            };
+            (0..3).map(|channel| (range(channel), channel)).max().unwrap()
+        };
+        let mut boxes = vec![pixels.to_vec()];
         while boxes.len() < max_colors {
-            let splittable = (0..boxes.len()).rev().filter(|&index| boxes[index].len() > 1);
-            let Some(widest) = splittable.max_by_key(|&index| (widest_channel(&boxes[index]).0, pixel_count(&boxes[index])))
+            let Some(index) = (0..boxes.len()).filter(|&index| widest(&boxes[index]).0 > 0).max_by_key(|&index| widest(&boxes[index]).0)
             else {
                 break;
             };
-            let mut colors = boxes.swap_remove(widest);
-            let (_, channel) = widest_channel(&colors);
-            colors.sort_by_key(|&(color, _)| (color[channel], color));
-            let half = pixel_count(&colors).div_ceil(2);
-            let mut seen = 0;
-            let reaches_half = colors.iter().position(|&(_, count)| {
-                seen += u64::from(count);
-                seen >= half
-            });
-            let cut = reaches_half.map_or(1, |position| position + 1).clamp(1, colors.len() - 1);
-            let upper = colors.split_off(cut);
+            let mut colors = boxes.swap_remove(index);
+            let channel = widest(&colors).1;
+            colors.sort_by_key(|&color| (color[channel], color));
+            let upper = colors.split_off(colors.len() / 2);
             boxes.push(colors);
             boxes.push(upper);
         }
-        boxes.iter().map(|colors| average(colors)).collect()
+        let average = |colors: &[Rgb]| -> Rgb {
+            std::array::from_fn(|channel| {
+                let sum: usize = colors.iter().map(|color| usize::from(color[channel])).sum();
+                ((sum + colors.len() / 2) / colors.len()) as u8
+            })
+        };
+        Palette(boxes.iter().map(|colors| average(colors)).collect())
+    }
+
+    fn squared_error_shown_by(palette: &Palette, pixels: &[Rgb]) -> u64 {
+        let shown = palette.to_indices(pixels).into_iter().map(|index| palette.colors()[usize::from(index)]);
+        pixels.iter().zip(shown).map(|(&pixel, shown)| u64::from(squared_distance(pixel, shown))).sum()
+    }
+
+    fn dense_cluster_and_rare_spread() -> Vec<Rgb> {
+        (0..30_000u32)
+            .map(|n| if n % 10 == 0 { [(n * 7) as u8, (n * 13) as u8, (n * 29) as u8] } else { [120 + (n % 9) as u8, 60 + (n % 5) as u8, 30] })
+            .collect()
+    }
+
+    fn error_against_plain_median_cut(pixels: &[Rgb], max_colors: usize) -> (u64, u64) {
+        let chosen = squared_error_shown_by(&Palette::from_frames(&[pixels], max_colors).unwrap(), pixels);
+        (chosen, squared_error_shown_by(&plain_median_cut(pixels, max_colors), pixels))
     }
 
     #[test]
-    fn the_palette_is_the_one_sorting_every_box_would_choose() {
-        let gradient: Vec<Rgb> = (0..=255u8).flat_map(|red| (0..=255u8).step_by(3).map(move |green| [red, green, 7])).collect();
+    fn unevenly_spread_colors_are_shown_with_less_error_than_plain_median_cut() {
         let mostly_one_value: Vec<Rgb> =
             (0..20_000u32).map(|n| if n % 5 == 0 { [(n % 256) as u8, (n / 256) as u8, 3] } else { [90, (n % 7) as u8, (n % 11) as u8] }).collect();
-        let few_heavy: Vec<Rgb> = (0..9000u32).map(|n| [[10, 200, 30], [10, 40, 30], [250, 40, 30], [10, 200, 31]][(n % 4) as usize]).collect();
-        let cases: [(&str, Vec<Rgb>); 4] =
-            [("many", many_colors()), ("gradient", gradient), ("mostly one value", mostly_one_value), ("few heavy", few_heavy)];
+        let cases = [("many", many_colors()), ("mostly one value", mostly_one_value), ("dense cluster and rare spread", dense_cluster_and_rare_spread())];
         for (name, pixels) in &cases {
-            for max_colors in [2, 3, 16, 64, Palette::MAX_COLORS] {
-                let chosen = Palette::from_frames(&[pixels], max_colors).unwrap();
-                assert_eq!(chosen.colors(), median_cut_by_sorting(&[pixels], max_colors), "{name}, {max_colors} colors");
+            for max_colors in [4, 16, 64, Palette::MAX_COLORS] {
+                let (chosen, median_cut) = error_against_plain_median_cut(pixels, max_colors);
+                assert!(chosen < median_cut, "{name}, {max_colors} colors: {chosen} against {median_cut}");
             }
+        }
+    }
+
+    #[test]
+    fn an_even_gradient_is_shown_about_as_well_as_plain_median_cut() {
+        let gradient: Vec<Rgb> = (0..=255u8).flat_map(|red| (0..=255u8).step_by(3).map(move |green| [red, green, 7])).collect();
+        for max_colors in [4, 16, 64, Palette::MAX_COLORS] {
+            let (chosen, median_cut) = error_against_plain_median_cut(&gradient, max_colors);
+            assert!(chosen * 100 <= median_cut * 101, "{max_colors} colors: {chosen} against {median_cut}");
+        }
+    }
+
+    #[test]
+    fn rare_colors_far_from_a_dense_cluster_are_shown_with_far_less_error_than_plain_median_cut() {
+        for max_colors in [16, 64] {
+            let (chosen, median_cut) = error_against_plain_median_cut(&dense_cluster_and_rare_spread(), max_colors);
+            assert!(chosen * 2 < median_cut, "{max_colors} colors: {chosen} against {median_cut}");
         }
     }
 
