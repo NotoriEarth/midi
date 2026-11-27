@@ -2,6 +2,7 @@
 name = "gif-win"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 [dependencies]
 gif-core = { path = "../gif-core" }
