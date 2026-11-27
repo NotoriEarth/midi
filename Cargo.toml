@@ -5,6 +5,7 @@ members = ["crates/gif-core", "crates/gif-win", "app"]
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+license = "MIT"
 
 [profile.dev.package.gif-core]
 opt-level = 3
