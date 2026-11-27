@@ -1,0 +1,134 @@
+name: release
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+# Read-only by default. Only the release job below gets write access.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag must match the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $tagVersion = '${{ github.ref_name }}'.Substring(1)
+          $appVersion = (Get-Content app/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($tagVersion -ne $appVersion) {
+            throw "Tag '${{ github.ref_name }}' does not match version '$appVersion' in app/tauri.conf.json"
+          }
+          Write-Host "Tag and app version agree: $appVersion"
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install tauri-cli 2
+        run: |
+          if (-not (Get-Command cargo-tauri -ErrorAction SilentlyContinue)) {
+            cargo install tauri-cli --version "^2" --locked
+          }
+          cargo tauri --version
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build installer
+        working-directory: app
+        run: cargo tauri build
+
+      - name: Locate installer
+        id: bundle
+        run: |
+          $installers = @(Get-ChildItem target/release/bundle/nsis -Filter 'midi_*_x64-setup.exe')
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one installer in target/release/bundle/nsis, found $($installers.Count)"
+          }
+          "path=$($installers[0].FullName)" >> $env:GITHUB_OUTPUT
+          "name=$($installers[0].Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Smoke test install, launch, uninstall
+        env:
+          SETUP: ${{ steps.bundle.outputs.path }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installDir = Join-Path $env:LOCALAPPDATA 'midi'
+          $app = Join-Path $installDir 'midi-app.exe'
+          $uninstaller = Join-Path $installDir 'uninstall.exe'
+
+          if (Test-Path $app) { throw "FAIL: midi is already installed on the runner: $app" }
+
+          # 1. Silent install. Start-Process -Wait also waits for the NSIS process to exit.
+          $install = Start-Process -FilePath $env:SETUP -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "FAIL: installer exited with code $($install.ExitCode)" }
+
+          # 2. The app must be on disk.
+          if (-not (Test-Path $app)) { throw "FAIL: $app does not exist after install" }
+          if (-not (Test-Path $uninstaller)) { throw "FAIL: $uninstaller does not exist after install" }
+          Write-Host "Installed: $app"
+
+          # 3. Launch hidden and make sure it survives startup.
+          $process = Start-Process -FilePath $app -ArgumentList '--hidden' -PassThru
+          Start-Sleep -Seconds 5
+          $process.Refresh()
+          if ($process.HasExited) {
+            throw "FAIL: midi-app.exe exited within 5 seconds with code $($process.ExitCode)"
+          }
+          if (-not (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) {
+            throw "FAIL: midi-app.exe (pid $($process.Id)) is not running"
+          }
+          Write-Host "midi-app.exe is alive after 5 seconds (pid $($process.Id))"
+
+          # 4. Stop it.
+          Stop-Process -Id $process.Id -Force
+          $process.WaitForExit(10000) | Out-Null
+          if (-not $process.HasExited) { throw "FAIL: could not stop midi-app.exe" }
+
+          # 5. Silent uninstall. Without _?= the NSIS uninstaller copies itself to %TEMP%
+          # and returns at once, so pointing it at its own folder makes -Wait mean something.
+          # That also leaves uninstall.exe behind, which is fine.
+          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S', "_?=$installDir" -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "FAIL: uninstaller exited with code $($uninstall.ExitCode)" }
+          if (Test-Path $app) { throw "FAIL: $app still exists after uninstall" }
+          Write-Host "Smoke test passed"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: midi-installer
+          path: ${{ steps.bundle.outputs.path }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: midi-installer
+
+      - name: Draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: midi_*_x64-setup.exe
+          fail_on_unmatched_files: true
